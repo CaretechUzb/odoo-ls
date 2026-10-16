@@ -81,3 +81,23 @@ fn test_features_on_dropped_ast_match_file_cache() {
         assert_eq!(cached, uncached);
     }
 }
+
+/// Opening a file whose AST was dropped, with unchanged content, gives it its AST back.
+#[test]
+fn test_open_file_with_dropped_ast() {
+    let (mut odoo, mut config) = setup::setup::setup_server(true);
+    config.set_bool(ConfigKey::FileCache, false);
+    let mut session = setup::setup::create_init_session(&mut odoo, config);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests").join("data").join("addons").join("module_1").join("models").join("base_test_models.py")
+        .sanitize();
+    let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path).expect("file info not found");
+    assert!(!file_info.borrow().file_info_ast.borrow().ast.is_built(), "the AST should have been dropped after validation");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let open = [lsp_types::TextDocumentContentChangeEvent { range: None, range_length: None, text }];
+    let file_mgr = session.sync_odoo.get_file_mgr();
+    let (updated, _) = file_mgr.borrow_mut().update_file_info(&mut session, &path, Some(&open), Some(1), false);
+    assert!(!updated, "unchanged content must not trigger a rebuild");
+    assert!(file_info.borrow().opened);
+    assert!(file_info.borrow().file_info_ast.borrow().ast.is_built(), "an opened file must have its AST");
+}
