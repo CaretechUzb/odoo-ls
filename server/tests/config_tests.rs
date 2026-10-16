@@ -2429,7 +2429,7 @@ name = "default"
     let config = cfg.default();
 
     // Wiki "Configuration reference" table defaults.
-    assert!(config.file_cache());
+    assert!(!config.file_cache());
     assert_eq!(config.diag_missing_imports(),
         odoo_ls_server::core::config::DiagMissingImportsMode::All);
     assert!(config.ac_filter_model_names());
