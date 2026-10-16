@@ -2,6 +2,7 @@ use crate::constants::{BuildSteps, PackageType};
 use crate::core::build_scheduler::BuildScheduler;
 use crate::core::evaluation::{Evaluation, EvaluationSymbolPtr};
 use crate::core::file_mgr::Ast;
+use crate::core::graph_recorder::{self, PendingEdge};
 use crate::core::symbols::Dependencies;
 use crate::core::symbols::ModuleSymbol;
 use crate::core::symbols::storage::XmlDataParent;
@@ -371,6 +372,7 @@ impl ReferenceFeature {
         }
         let mut visitor = ReferenceVisitor {
             sym_stack: vec![],
+            build_functions: false,
         };
         session.sync_odoo.evaluation_locations = vec![];
         session.sync_odoo.evaluation_search = Some(reference_target.clone());
@@ -384,6 +386,27 @@ impl ReferenceFeature {
             .cmp(&(b.uri.as_str(), b.range.start.line, b.range.start.character)));
         locations.dedup_by(|a, b| a.uri == b.uri && a.range.start == b.range.start);
         locations
+    }
+
+    /// Graph edges of `file`, recorded by a reference walk that is not persisted. Used for files
+    /// whose indexed rows are stale (still queued for a rebuild).
+    pub(crate) fn graph_scan_file(session: &mut SessionInfo, file: SourceFileKey) -> Vec<PendingEdge> {
+        let path = session.st().file_path(file).to_string();
+        let Some(file_info) = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path) else {
+            return vec![];
+        };
+        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+            file_info.borrow_mut().prepare_ast(session);
+        }
+        let file_info_ast = file_info.borrow().file_info_ast.clone();
+        let file_info_ast = file_info_ast.borrow();
+        let Some(stmts) = file_info_ast.get_stmts() else {
+            return vec![];
+        };
+        graph_recorder::transient_scan(session, file, |session| {
+            let mut visitor = ReferenceVisitor { sym_stack: vec![], build_functions: true };
+            visitor.browse_file(session, file, stmts);
+        })
     }
 
     //the name inside the manifest will be different, so we only search for the key in this module and return the location with the range
@@ -457,6 +480,9 @@ impl ReferenceFeature {
 
 struct ReferenceVisitor {
     sym_stack: Vec<SymbolKey>,
+    /// Build function bodies (ARCH, ARCH_EVAL) before visiting them, like the validator does.
+    /// Set for graph scans of files whose validation is still queued.
+    build_functions: bool,
 }
 
 impl ReferenceVisitor {
@@ -472,6 +498,13 @@ impl ReferenceVisitor {
                 Stmt::FunctionDef(f) => {
                     let sym = session.st().get_positioned_symbol(*self.sym_stack.last().unwrap(), &f.name, &f.range);
                     if let Some(sym) = sym {
+                        if self.build_functions {
+                            for step in [BuildSteps::ARCH, BuildSteps::ARCH_EVAL] {
+                                if session.st().ready_for_step(sym.unwrap_buildable_key(), step) {
+                                    BuildScheduler::build_now(session, sym.unwrap_buildable_key(), step);
+                                }
+                            }
+                        }
                         self.sym_stack.push(sym);
                         self.visit_vec_stmt(session, &f.body);
                         self.sym_stack.pop();
@@ -536,6 +569,9 @@ impl ReferenceVisitor {
     fn _resolve_import(&mut self, session: &mut SessionInfo, _from_stmt: Option<&Identifier>, name_aliases: &[Alias], _level: Option<u32>, _range: &TextRange) {
         let file_symbol = session.st().get_file(self.sym_stack[0]);
         let file_symbol = file_symbol.expect("file symbol not found");
+        for alias in name_aliases.iter() {
+            graph_recorder::on_import_alias(session, *self.sym_stack.last().unwrap(), alias, false);
+        }
         let Some(eval_search) = session.sync_odoo.evaluation_search.clone() else {
             return;
         };

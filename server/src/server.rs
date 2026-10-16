@@ -2,7 +2,7 @@ use std::{io::Error, panic, sync::{Arc, Mutex, atomic::AtomicBool}, thread::Join
 
 use crossbeam_channel::{Receiver, Select, Sender};
 use lsp_server::{Connection, IoThreads, Message, ProtocolError, RequestId, ResponseError};
-use lsp_types::{CancelParams, CompletionOptions, DeclarationOptions, DefinitionOptions, DocumentSymbolOptions, FileOperationFilter, FileOperationPattern, FileOperationRegistrationOptions, HoverProviderCapability, InitializeParams, InitializeResult, OneOf, ReferencesOptions, SaveOptions, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, WorkDoneProgressOptions, WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities, WorkspaceSymbolOptions, notification::{Cancel, DidChangeConfiguration, DidChangeTextDocument, DidChangeWatchedFiles, DidChangeWorkspaceFolders, DidCloseTextDocument, DidCreateFiles, DidDeleteFiles, DidOpenTextDocument, DidRenameFiles, DidSaveTextDocument, Notification}, request::{Completion, DocumentSymbolRequest, GotoDeclaration, GotoDefinition, HoverRequest, References, Request, ResolveCompletionItem, Shutdown, WorkspaceSymbolRequest, WorkspaceSymbolResolve, SemanticTokensFullRequest}};
+use lsp_types::{CancelParams, CompletionOptions, DeclarationOptions, DefinitionOptions, DocumentSymbolOptions, FileOperationFilter, FileOperationPattern, FileOperationRegistrationOptions, HoverProviderCapability, InitializeParams, InitializeResult, OneOf, ReferencesOptions, SaveOptions, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, WorkDoneProgressOptions, WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities, WorkspaceSymbolOptions, notification::{Cancel, DidChangeConfiguration, DidChangeTextDocument, DidChangeWatchedFiles, DidChangeWorkspaceFolders, DidCloseTextDocument, DidCreateFiles, DidDeleteFiles, DidOpenTextDocument, DidRenameFiles, DidSaveTextDocument, Notification}, request::{CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare, TypeHierarchyPrepare, TypeHierarchySubtypes, TypeHierarchySupertypes, Completion, DocumentSymbolRequest, GotoDeclaration, GotoDefinition, HoverRequest, References, Request, ResolveCompletionItem, Shutdown, WorkspaceSymbolRequest, WorkspaceSymbolResolve, SemanticTokensFullRequest}};
 use crate::features::semantic_tokens::SemanticTokensFeature;
 use ruff_source_file::PositionEncoding;
 use serde_json::json;
@@ -19,7 +19,9 @@ pub fn is_main_thread_request(method: &str) -> bool {
     matches!(method,
         HoverRequest::METHOD | GotoDefinition::METHOD | GotoDeclaration::METHOD | References::METHOD | DocumentSymbolRequest::METHOD |
         WorkspaceSymbolRequest::METHOD | WorkspaceSymbolResolve::METHOD | Completion::METHOD | ResolveCompletionItem::METHOD |
-        SemanticTokensFullRequest::METHOD
+        SemanticTokensFullRequest::METHOD |
+        CallHierarchyPrepare::METHOD | CallHierarchyIncomingCalls::METHOD | CallHierarchyOutgoingCalls::METHOD |
+        TypeHierarchyPrepare::METHOD | TypeHierarchySupertypes::METHOD | TypeHierarchySubtypes::METHOD
     )
 }
 
@@ -208,6 +210,7 @@ impl Server {
                     trigger_characters: Some(vec![S!("."), S!(","), S!("'"), S!("\""), S!("(")]),
                     ..CompletionOptions::default()
                 }),
+                call_hierarchy_provider: Some(lsp_types::CallHierarchyServerCapability::Simple(true)),
                 references_provider: Some(OneOf::Right(ReferencesOptions {
                     work_done_progress_options: WorkDoneProgressOptions {
                         work_done_progress: Some(false)
@@ -287,7 +290,10 @@ impl Server {
             }
         };
 
-        self.connection.as_ref().unwrap().initialize_finish(id, serde_json::to_value(initialize_data).unwrap())?;
+        let mut initialize_data = serde_json::to_value(initialize_data).unwrap();
+        // lsp-types 0.97 has no ServerCapabilities field for the LSP 3.17 type hierarchy.
+        initialize_data["capabilities"]["typeHierarchyProvider"] = json!(true);
+        self.connection.as_ref().unwrap().initialize_finish(id, initialize_data)?;
         let _ = self.connection.as_ref().unwrap().sender.send(Message::Notification(lsp_server::Notification {
             method: OdooNotification::SetPid.as_str().to_string(),
             params: json!({

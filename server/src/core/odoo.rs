@@ -23,6 +23,9 @@ use crate::lsp_types_custom::{ConfigDiagnosticAction, ConfigDiagnosticMessage, C
 use crate::odoo_version::OdooVersion;
 use crate::features::document_symbols::DocumentSymbolFeature;
 use crate::features::references::{ReferenceFeature, ReferenceTarget};
+use crate::features::call_hierarchy::CallHierarchyFeature;
+use crate::features::type_hierarchy::TypeHierarchyFeature;
+use crate::core::file_mgr::FileInfo;
 use crate::features::workspace_symbols::WorkspaceSymbolFeature;
 use crate::features::declaration::DeclarationFeature;
 use crate::features::completion::CompletionFeature;
@@ -1761,6 +1764,52 @@ impl Odoo {
             }
         }
         Ok(None)
+    }
+
+    /// Python file symbol and file info at a text document position, for the hierarchy requests.
+    fn python_file_at(session: &mut SessionInfo, position: &TextDocumentPositionParams) -> Option<(SourceFileKey, Rc<RefCell<FileInfo>>)> {
+        if session.sync_odoo.state_init == InitState::NOT_READY {
+            return None;
+        }
+        let uri = position.text_document.uri.to_string();
+        if ![".py", ".pyi"].iter().any(|ext| uri.ends_with(ext)) {
+            return None;
+        }
+        let path = FileMgr::uri2pathname(uri.as_str());
+        let file_symbol = SyncOdoo::get_symbol_of_opened_file(session, Path::new(&path))?;
+        let file_info = session.sync_odoo.get_file_mgr().borrow_mut().get_file_info(&path)?;
+        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+            file_info.borrow_mut().prepare_ast(session);
+        }
+        Some((file_symbol, file_info))
+    }
+
+    pub fn handle_prepare_call_hierarchy(session: &mut SessionInfo, params: CallHierarchyPrepareParams) -> Result<Option<Vec<CallHierarchyItem>>, ResponseError> {
+        let position = params.text_document_position_params;
+        let Some((file_symbol, file_info)) = Odoo::python_file_at(session, &position) else { return Ok(None) };
+        CallHierarchyFeature::prepare(session, file_symbol, &file_info, position.position.line, position.position.character)
+    }
+
+    pub fn handle_incoming_calls(session: &mut SessionInfo, params: CallHierarchyIncomingCallsParams) -> Result<Option<Vec<CallHierarchyIncomingCall>>, ResponseError> {
+        CallHierarchyFeature::incoming_calls(session, &params.item)
+    }
+
+    pub fn handle_outgoing_calls(session: &mut SessionInfo, params: CallHierarchyOutgoingCallsParams) -> Result<Option<Vec<CallHierarchyOutgoingCall>>, ResponseError> {
+        CallHierarchyFeature::outgoing_calls(session, &params.item)
+    }
+
+    pub fn handle_prepare_type_hierarchy(session: &mut SessionInfo, params: TypeHierarchyPrepareParams) -> Result<Option<Vec<TypeHierarchyItem>>, ResponseError> {
+        let position = params.text_document_position_params;
+        let Some((file_symbol, file_info)) = Odoo::python_file_at(session, &position) else { return Ok(None) };
+        TypeHierarchyFeature::prepare(session, file_symbol, &file_info, position.position.line, position.position.character)
+    }
+
+    pub fn handle_supertypes(session: &mut SessionInfo, params: TypeHierarchySupertypesParams) -> Result<Option<Vec<TypeHierarchyItem>>, ResponseError> {
+        TypeHierarchyFeature::supertypes(session, &params.item)
+    }
+
+    pub fn handle_subtypes(session: &mut SessionInfo, params: TypeHierarchySubtypesParams) -> Result<Option<Vec<TypeHierarchyItem>>, ResponseError> {
+        TypeHierarchyFeature::subtypes(session, &params.item)
     }
 
     pub fn handle_autocomplete(session: &mut SessionInfo ,params: CompletionParams) -> Result<Option<CompletionResponse>, ResponseError> {

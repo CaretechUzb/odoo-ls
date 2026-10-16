@@ -528,6 +528,47 @@ pub fn on_path_removed(session: &mut SessionInfo, path: &str) {
     }
 }
 
+/// Python files queued in any rebuild queue: their indexed rows may be stale and requests scan
+/// them instead (`ReferenceFeature::graph_scan_file`).
+pub fn dirty_files(session: &SessionInfo) -> HashSet<SourceFileKey> {
+    let st = session.st();
+    let scheduler = &session.sync_odoo.build_scheduler;
+    let mut files = HashSet::default();
+    for queue in [&scheduler.rebuild_arch, &scheduler.rebuild_arch_eval, &scheduler.rebuild_validation] {
+        for sym in queue.iter_valid(st) {
+            if let Some(file) = st.get_file(sym.into())
+                && matches!(file, SourceFileKey::File(_) | SourceFileKey::PythonPackage(_) | SourceFileKey::Module(_)) {
+                    files.insert(file);
+                }
+        }
+    }
+    files
+}
+
+/// Python file symbol whose file path is `path`.
+pub fn file_symbol_for_path(session: &SessionInfo, path: &str) -> Option<SourceFileKey> {
+    let file_path = Path::new(path);
+    let candidates = [file_path, file_path.parent().filter(|_| path.ends_with("__init__.py")).unwrap_or(file_path)];
+    let ep_mgr = session.sync_odoo.entry_point_mgr.clone();
+    let ep_mgr = ep_mgr.borrow();
+    for entry in ep_mgr.iter_all() {
+        let entry = entry.borrow();
+        for candidate in candidates {
+            if !entry.is_valid_for(candidate) {
+                continue;
+            }
+            let tree = entry.get_tree_for_entry(candidate);
+            for sym in session.st().get_symbol(entry.root.into(), tree.as_slice(), u32::MAX) {
+                if let Some(file) = sym.as_source_file_key()
+                    && session.st().file_path(file) == path {
+                        return Some(file);
+                    }
+            }
+        }
+    }
+    None
+}
+
 /// Text of the file at `path` if loaded (used to locate def/class names).
 fn file_text(session: &SessionInfo, path: &str) -> Option<String> {
     let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(path)?;

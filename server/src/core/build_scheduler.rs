@@ -7,9 +7,9 @@ use crate::{S, constants::{BuildStatus, BuildSteps, DEBUG_REBUILD_NOW, DEBUG_STE
 
 #[derive(Debug)]
 pub struct BuildScheduler {
-    rebuild_arch: FifoWeakHashSet<BuildableSymbolKey>,
-    rebuild_arch_eval: FifoWeakHashSet<BuildableSymbolKey>,
-    rebuild_validation: FifoWeakHashSet<BuildableSymbolKey>,
+    pub(crate) rebuild_arch: FifoWeakHashSet<BuildableSymbolKey>,
+    pub(crate) rebuild_arch_eval: FifoWeakHashSet<BuildableSymbolKey>,
+    pub(crate) rebuild_validation: FifoWeakHashSet<BuildableSymbolKey>,
 }
 
 macro_rules! bs {

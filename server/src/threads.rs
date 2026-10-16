@@ -2,7 +2,7 @@ use std::{collections::VecDeque, path::{Path, PathBuf}, sync::{Arc, Mutex}, time
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use lsp_server::{Message, RequestId, Response, ResponseError};
-use lsp_types::{CompletionItem, CompletionResponse, DocumentSymbolResponse, GotoDefinitionResponse, Hover, Location, LogMessageParams, MessageType, SemanticTokensResult, ShowMessageParams, WorkspaceSymbol, WorkspaceSymbolResponse, notification::{DidChangeConfiguration, DidChangeTextDocument, DidChangeWatchedFiles, DidChangeWorkspaceFolders,
+use lsp_types::{CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, TypeHierarchyItem, request::{CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare, TypeHierarchyPrepare, TypeHierarchySubtypes, TypeHierarchySupertypes}, CompletionItem, CompletionResponse, DocumentSymbolResponse, GotoDefinitionResponse, Hover, Location, LogMessageParams, MessageType, SemanticTokensResult, ShowMessageParams, WorkspaceSymbol, WorkspaceSymbolResponse, notification::{DidChangeConfiguration, DidChangeTextDocument, DidChangeWatchedFiles, DidChangeWorkspaceFolders,
     DidCloseTextDocument, DidCreateFiles, DidDeleteFiles, DidOpenTextDocument, DidRenameFiles, DidSaveTextDocument, LogMessage,
     Notification, ShowMessage}, request::{Completion, DocumentSymbolRequest, GotoDeclaration, GotoDeclarationResponse, GotoDefinition, HoverRequest, References, Request, ResolveCompletionItem, SemanticTokensFullRequest, Shutdown, WorkspaceSymbolRequest, WorkspaceSymbolResolve}};
 use serde::{de::DeserializeOwned, Serialize};
@@ -455,6 +455,36 @@ pub fn message_processor_thread_main(sync_odoo: Arc<Mutex<SyncOdoo>>,
                             let mut session = create_session!(sender_to_s, receiver_to_s, Some(generic_sender_to_main.clone()), sync_odoo, delayed_process_sender);
                             BuildScheduler::process_rebuilds(&mut session, true);
                             to_value::<Vec<Location>>(Odoo::handle_references(&mut session, serde_json::from_value(r.params).unwrap()))
+                        },
+                        CallHierarchyPrepare::METHOD => {
+                            let mut session = create_session!(sender_to_s, receiver_to_s, Some(generic_sender_to_main.clone()), sync_odoo, delayed_process_sender);
+                            BuildScheduler::process_rebuilds(&mut session, true);
+                            to_value::<Vec<CallHierarchyItem>>(Odoo::handle_prepare_call_hierarchy(&mut session, serde_json::from_value(r.params).unwrap()))
+                        },
+                        CallHierarchyIncomingCalls::METHOD => {
+                            let mut session = create_session!(sender_to_s, receiver_to_s, Some(generic_sender_to_main.clone()), sync_odoo, delayed_process_sender);
+                            BuildScheduler::process_rebuilds(&mut session, true);
+                            to_value::<Vec<CallHierarchyIncomingCall>>(Odoo::handle_incoming_calls(&mut session, serde_json::from_value(r.params).unwrap()))
+                        },
+                        CallHierarchyOutgoingCalls::METHOD => {
+                            let mut session = create_session!(sender_to_s, receiver_to_s, Some(generic_sender_to_main.clone()), sync_odoo, delayed_process_sender);
+                            BuildScheduler::process_rebuilds(&mut session, true);
+                            to_value::<Vec<CallHierarchyOutgoingCall>>(Odoo::handle_outgoing_calls(&mut session, serde_json::from_value(r.params).unwrap()))
+                        },
+                        TypeHierarchyPrepare::METHOD => {
+                            let mut session = create_session!(sender_to_s, receiver_to_s, Some(generic_sender_to_main.clone()), sync_odoo, delayed_process_sender);
+                            BuildScheduler::process_rebuilds(&mut session, true);
+                            to_value::<Vec<TypeHierarchyItem>>(Odoo::handle_prepare_type_hierarchy(&mut session, serde_json::from_value(r.params).unwrap()))
+                        },
+                        TypeHierarchySupertypes::METHOD => {
+                            let mut session = create_session!(sender_to_s, receiver_to_s, Some(generic_sender_to_main.clone()), sync_odoo, delayed_process_sender);
+                            BuildScheduler::process_rebuilds(&mut session, true);
+                            to_value::<Vec<TypeHierarchyItem>>(Odoo::handle_supertypes(&mut session, serde_json::from_value(r.params).unwrap()))
+                        },
+                        TypeHierarchySubtypes::METHOD => {
+                            let mut session = create_session!(sender_to_s, receiver_to_s, Some(generic_sender_to_main.clone()), sync_odoo, delayed_process_sender);
+                            BuildScheduler::process_rebuilds(&mut session, true);
+                            to_value::<Vec<TypeHierarchyItem>>(Odoo::handle_subtypes(&mut session, serde_json::from_value(r.params).unwrap()))
                         },
                         DocumentSymbolRequest::METHOD => {
                             let mut session = create_session!(sender_to_s, receiver_to_s, Some(generic_sender_to_main.clone()), sync_odoo, delayed_process_sender);
