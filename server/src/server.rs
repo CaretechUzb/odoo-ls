@@ -13,6 +13,25 @@ use tracing::{error, info, warn};
 use crate::{S, constants::{DEBUG_THREADS, EXTENSION_VERSION}, core::odoo::{OdooNotification, SyncOdoo}, crash_buffer, threads::{DelayedProcessingMessage, ThreadMessage, delayed_changes_process_thread, message_processor_thread_main}};
 
 
+/// Whether the main thread answers this request method. `Server::forward_message` answers every
+/// other request with [`method_not_found_response`].
+pub fn is_main_thread_request(method: &str) -> bool {
+    matches!(method,
+        HoverRequest::METHOD | GotoDefinition::METHOD | GotoDeclaration::METHOD | References::METHOD | DocumentSymbolRequest::METHOD |
+        WorkspaceSymbolRequest::METHOD | WorkspaceSymbolResolve::METHOD | Completion::METHOD | ResolveCompletionItem::METHOD |
+        SemanticTokensFullRequest::METHOD
+    )
+}
+
+/// JSON-RPC `MethodNotFound` error for a request method the server does not handle.
+pub fn method_not_found_response(request: &lsp_server::Request) -> lsp_server::Response {
+    lsp_server::Response::new_err(
+        request.id.clone(),
+        lsp_server::ErrorCode::MethodNotFound as i32,
+        format!("odoo-ls: unsupported request method: {}", request.method),
+    )
+}
+
 /**
  * Server handle connection between the client and the extension.
  * It can create a connection through io or tcp.
@@ -427,19 +446,18 @@ impl Server {
     fn forward_message(&mut self, msg: Message) {
         match msg {
             Message::Request(r) => {
-                self.running_request_ids.lock().unwrap().push(r.id.clone());
-                match r.method.as_str() {
-                    HoverRequest::METHOD | GotoDefinition::METHOD | GotoDeclaration::METHOD | References::METHOD | DocumentSymbolRequest::METHOD |
-                    WorkspaceSymbolRequest::METHOD | WorkspaceSymbolResolve::METHOD | Completion::METHOD | ResolveCompletionItem::METHOD |
-                    SemanticTokensFullRequest::METHOD => {
-                        self.interrupt_rebuild_boolean.store(true, std::sync::atomic::Ordering::SeqCst);
-                        if DEBUG_THREADS {
-                            info!("Sending request to main thread : {} - {}", r.method, r.id);
-                        }
-                        self.generic_sender_to_main.send(ThreadMessage::LSPMessage(Message::Request(r))).unwrap();
-                    },
-                    _ => {panic!("Not handled Request Id: {}", r.method)}
+                if !is_main_thread_request(r.method.as_str()) {
+                    // Answer instead of panicking: a panic here kills the server for every client.
+                    warn!("Not handled Request Id: {}", r.method);
+                    let _ = self.connection.as_ref().unwrap().sender.send(Message::Response(method_not_found_response(&r)));
+                    return;
                 }
+                self.running_request_ids.lock().unwrap().push(r.id.clone());
+                self.interrupt_rebuild_boolean.store(true, std::sync::atomic::Ordering::SeqCst);
+                if DEBUG_THREADS {
+                    info!("Sending request to main thread : {} - {}", r.method, r.id);
+                }
+                self.generic_sender_to_main.send(ThreadMessage::LSPMessage(Message::Request(r))).unwrap();
             },
             Message::Response(r) => {
                 if DEBUG_THREADS {
