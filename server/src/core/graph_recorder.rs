@@ -328,7 +328,8 @@ pub fn on_import_alias(session: &mut SessionInfo, scope: SymbolKey, alias: &Alia
 
 /// Hook for assignment statements: the validator only evaluates the assigned value, while the
 /// references of a symbol include the assignment targets (`self.x = ...`). Evaluates the
-/// targets so their uses are recorded; diagnostics and dependencies are discarded.
+/// targets so their uses are recorded; diagnostics and dependencies are discarded. Targets that
+/// cannot record anything (names bound as function locals) are not evaluated.
 pub fn on_assign_targets(session: &mut SessionInfo, scope: SymbolKey, targets: &[Expr], max_infer: &TextSize) {
     let Some(recorder) = session.sync_odoo.graph_recorder.as_ref() else { return };
     let Some(top) = recorder.stack.last().map(|u| u.unit) else { return };
@@ -336,7 +337,47 @@ pub fn on_assign_targets(session: &mut SessionInfo, scope: SymbolKey, targets: &
         return;
     }
     for target in targets {
-        Evaluation::eval_from_ast(session, target, scope, max_infer, false, &mut vec![]);
+        if target_may_record(session.st(), scope, target) {
+            Evaluation::eval_from_ast(session, target, scope, max_infer, false, &mut vec![]);
+        }
+    }
+}
+
+/// Whether evaluating the assignment target `target` in `scope` can record an edge. A bare name
+/// assigned in a function resolves (`SymbolTable::infer_name`) to a local variable, which is not
+/// indexed, unless the name is a nested class or function there, or the lookup falls through to
+/// an enclosing scope that defines it. Tuples and lists of such names record nothing either.
+fn target_may_record(st: &SymbolTable, scope: SymbolKey, target: &Expr) -> bool {
+    match target {
+        Expr::Name(name) => !matches!(scope, SymbolKey::Function(_)) || name_resolves_beyond_locals(st, scope, name.id.as_str()),
+        Expr::Tuple(tuple) => tuple.elts.iter().any(|e| target_may_record(st, scope, e)),
+        Expr::List(list) => list.elts.iter().any(|e| target_may_record(st, scope, e)),
+        Expr::Starred(starred) => target_may_record(st, scope, &starred.value),
+        _ => true,
+    }
+}
+
+/// Whether `name`, looked up from the function `function` as `infer_name` does (the function,
+/// then the enclosing non-class scopes up to the file), can be anything but a local variable.
+fn name_resolves_beyond_locals(st: &SymbolTable, function: SymbolKey, name: &str) -> bool {
+    let mut current = function;
+    loop {
+        match current {
+            SymbolKey::Function(f) => {
+                let non_variable = st[f].symbols().get(name)
+                    .is_some_and(|sections| sections.values().flatten().any(|s| !matches!(s, SymbolKey::Variable(_))));
+                if non_variable || !st.get_ext_symbol(current, name).is_empty() {
+                    return true;
+                }
+            },
+            SymbolKey::Class(_) => {}, // class bodies are not visible from their methods
+            SymbolKey::File(_) | SymbolKey::PythonPackage(_) | SymbolKey::Module(_) => {
+                return !children_named(st, current, name).is_empty() || !st.get_ext_symbol(current, name).is_empty();
+            },
+            _ => return true,
+        }
+        let Some(parent) = st.parent(current) else { return true };
+        current = parent;
     }
 }
 
@@ -440,13 +481,12 @@ fn put_index(session: &mut SessionInfo, graph: GraphIndex) {
 
 /// Node id of `sym`, writing its node if this session has not written it yet.
 fn node_id(session: &SessionInfo, graph: &mut GraphIndex, sym: SymbolKey, texts: &mut HashMap<String, Option<String>>) -> Result<Option<i64>, String> {
-    let st = session.st();
-    let Some(file) = st.get_file(sym) else { return Ok(None) };
-    let path = st.file_path(file);
-    if let Some(id) = graph.cached_node(path, sym) {
+    if let Some(id) = graph.cached_node(sym) {
         return Ok(Some(id));
     }
-    let path = path.to_string();
+    let st = session.st();
+    let Some(file) = st.get_file(sym) else { return Ok(None) };
+    let path = st.file_path(file).to_string();
     let text = texts.entry(path.clone()).or_insert_with(|| file_text(session, &path));
     let Some(info) = node_info(st, &path, text.as_deref(), sym) else { return Ok(None) };
     graph.upsert_node(sym, &info).map(Some)

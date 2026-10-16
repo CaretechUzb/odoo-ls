@@ -200,8 +200,11 @@ pub struct GraphIndex {
     /// `INDEXING_IN_PROGRESS` and references use the legacy scan.
     pub ready: bool,
     file_ids: HashMap<String, i64>,
-    /// node ids per file id, per symbol. Dropped for a file whenever its nodes are rewritten.
-    sym_cache: HashMap<i64, HashMap<SymbolKey, i64>>,
+    /// node id per symbol, for the symbols written this session. The symbols of a file are
+    /// dropped whenever its nodes are rewritten.
+    sym_cache: HashMap<SymbolKey, i64>,
+    /// Symbols in `sym_cache`, per file id.
+    file_syms: HashMap<i64, Vec<SymbolKey>>,
     generation: i64,
     /// Writes go into one open transaction committed every `BATCH_WRITES` writes: a commit
     /// per unit costs a page write per commit. Reads on this connection see uncommitted rows,
@@ -256,6 +259,7 @@ impl GraphIndex {
             ready: false,
             file_ids: HashMap::default(),
             sym_cache: HashMap::default(),
+            file_syms: HashMap::default(),
             generation: 0,
             in_batch: false,
             batched_writes: 0,
@@ -305,6 +309,7 @@ impl GraphIndex {
         self.conn().execute_batch("DELETE FROM edges; DELETE FROM nodes; DELETE FROM files;").map_err(sql_err)?;
         self.file_ids.clear();
         self.sym_cache.clear();
+        self.file_syms.clear();
         self.written_owners.clear();
         self.files_with_nodes.clear();
         self.ready = false;
@@ -414,9 +419,20 @@ impl GraphIndex {
     }
 
     /// Node id of `sym` if it was written during this session and its file was not rewritten since.
-    pub fn cached_node(&self, path: &str, sym: SymbolKey) -> Option<i64> {
-        let file_id = self.file_ids.get(path)?;
-        self.sym_cache.get(file_id)?.get(&sym).copied()
+    pub fn cached_node(&self, sym: SymbolKey) -> Option<i64> {
+        self.sym_cache.get(&sym).copied()
+    }
+
+    fn cache_node(&mut self, file_id: i64, sym: SymbolKey, id: i64) {
+        if self.sym_cache.insert(sym, id).is_none() {
+            self.file_syms.entry(file_id).or_default().push(sym);
+        }
+    }
+
+    fn forget_file_nodes(&mut self, file_id: i64) {
+        for sym in self.file_syms.remove(&file_id).unwrap_or_default() {
+            self.sym_cache.remove(&sym);
+        }
     }
 
     fn upsert_node_row(conn: &Connection, file_id: i64, info: &NodeInfo, generation: i64) -> Result<i64, String> {
@@ -458,12 +474,12 @@ impl GraphIndex {
             };
             let generation = self.generation;
             self.send(WriteOp::Nodes { file: file_id, generation, nodes: vec![(id, info.clone())], delete_stale: false })?;
-            self.sym_cache.entry(file_id).or_default().insert(sym, id);
+            self.cache_node(file_id, sym, id);
             return Ok(id);
         }
         self.begin_write()?;
         let id = GraphIndex::upsert_node_row(self.conn(), file_id, info, self.generation)?;
-        self.sym_cache.entry(file_id).or_default().insert(sym, id);
+        self.cache_node(file_id, sym, id);
         Ok(id)
     }
 
@@ -494,10 +510,9 @@ impl GraphIndex {
                 ids.push(id);
             }
             writer.identities.insert(file_id, identities);
-            let cache = self.sym_cache.entry(file_id).or_default();
-            cache.clear();
+            self.forget_file_nodes(file_id);
             for ((sym, _), id) in nodes.iter().zip(ids.iter()) {
-                cache.insert(*sym, *id);
+                self.cache_node(file_id, *sym, *id);
             }
             let rows = ids.iter().copied().zip(nodes.into_iter().map(|(_, info)| info)).collect();
             self.send(WriteOp::Nodes { file: file_id, generation, nodes: rows, delete_stale: had_nodes })?;
@@ -515,10 +530,9 @@ impl GraphIndex {
             delete_stale_nodes(conn, file_id, generation)?;
         }
         self.end_write()?;
-        let cache = self.sym_cache.entry(file_id).or_default();
-        cache.clear();
+        self.forget_file_nodes(file_id);
         for ((sym, _), id) in nodes.iter().zip(ids.iter()) {
-            cache.insert(*sym, *id);
+            self.cache_node(file_id, *sym, *id);
         }
         Ok(ids)
     }
@@ -553,7 +567,7 @@ impl GraphIndex {
             self.end_write()?;
         }
         self.file_ids.remove(path);
-        self.sym_cache.remove(&file_id);
+        self.forget_file_nodes(file_id);
         self.files_with_nodes.remove(&file_id);
         Ok(())
     }
