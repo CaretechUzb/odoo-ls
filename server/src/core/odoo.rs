@@ -2384,7 +2384,7 @@ impl Odoo {
         }
     }
 
-    pub(crate) fn handle_document_symbols(session: &mut SessionInfo<'_>, params: DocumentSymbolParams) -> Result<Option<DocumentSymbolResponse>, ResponseError> {
+    pub fn handle_document_symbols(session: &mut SessionInfo<'_>, params: DocumentSymbolParams) -> Result<Option<DocumentSymbolResponse>, ResponseError> {
         session.log_message(MessageType::INFO, format!("Document symbol requested for {}",
             params.text_document.uri.as_str(),
         ));

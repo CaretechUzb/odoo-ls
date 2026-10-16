@@ -101,7 +101,7 @@ impl DocumentSymbolFeature {
             #[allow(deprecated)]
             deprecated: None,
             range: file_info.borrow().text_range_to_range(stmt_function_def.range(), session.sync_odoo.encoding),
-            selection_range: file_info.borrow().text_range_to_range(stmt_function_def.range(), session.sync_odoo.encoding),
+            selection_range: file_info.borrow().text_range_to_range(stmt_function_def.name.range, session.sync_odoo.encoding),
             children: Some(children_symbols)
         });
     }
@@ -122,7 +122,7 @@ impl DocumentSymbolFeature {
             #[allow(deprecated)]
             deprecated: None,
             range: file_info.borrow().text_range_to_range(stmt_class_def.range(), session.sync_odoo.encoding),
-            selection_range: file_info.borrow().text_range_to_range(stmt_class_def.range(), session.sync_odoo.encoding),
+            selection_range: file_info.borrow().text_range_to_range(stmt_class_def.name.range, session.sync_odoo.encoding),
             children: Some(children_symbols)
         });
     }
