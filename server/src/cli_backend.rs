@@ -341,7 +341,7 @@ mod tests {
                 [[config]]
                 name = "default"
                 auto_refresh_delay = 9999
-                file_cache = false
+                file_cache = true
             "#,
             )
             .unwrap();
@@ -356,7 +356,7 @@ mod tests {
         let (_, config) = setup_with_config(&backend).expect("Expected a config entry to be returned");
 
         assert_eq!(config.auto_refresh_delay(), 9999);
-        assert!(!config.file_cache());
+        assert!(config.file_cache());
     }
 
     /// Without `--config-path`, setup should succeed and return the default `ConfigEntry`.
