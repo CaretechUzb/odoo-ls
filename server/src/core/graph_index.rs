@@ -158,6 +158,8 @@ pub struct GraphIndex {
     batched_writes: u32,
     /// (owner, kind) pairs written this session; other owners have no edges to delete.
     written_owners: HashSet<(i64, i64)>,
+    /// Files that got nodes this session; the others have no stale nodes to delete.
+    files_with_nodes: HashSet<i64>,
 }
 
 /// Edges per multi-row INSERT statement (11 parameters each, well under SQLite's limit).
@@ -205,6 +207,7 @@ impl GraphIndex {
             in_batch: false,
             batched_writes: 0,
             written_owners: HashSet::default(),
+            files_with_nodes: HashSet::default(),
         })
     }
 
@@ -249,6 +252,7 @@ impl GraphIndex {
         self.file_ids.clear();
         self.sym_cache.clear();
         self.written_owners.clear();
+        self.files_with_nodes.clear();
         self.ready = false;
         Ok(())
     }
@@ -311,6 +315,7 @@ impl GraphIndex {
     pub fn upsert_node(&mut self, sym: SymbolKey, info: &NodeInfo) -> Result<i64, String> {
         let file_id = self.file_id(&info.path)?;
         self.begin_write()?;
+        self.files_with_nodes.insert(file_id);
         let id = GraphIndex::upsert_node_row(self.conn(), file_id, info, self.generation)?;
         self.sym_cache.entry(file_id).or_default().insert(sym, id);
         Ok(id)
@@ -329,12 +334,16 @@ impl GraphIndex {
         for (_, info) in nodes.iter() {
             ids.push(GraphIndex::upsert_node_row(conn, file_id, info, generation)?);
         }
-        for sql in [
-            "DELETE FROM edges WHERE dst IN (SELECT id FROM nodes WHERE file = ?1 AND gen <> ?2)",
-            "DELETE FROM edges WHERE src IN (SELECT id FROM nodes WHERE file = ?1 AND gen <> ?2)",
-            "DELETE FROM nodes WHERE file = ?1 AND gen <> ?2",
-        ] {
-            conn.prepare_cached(sql).map_err(sql_err)?.execute(params![file_id, generation]).map_err(sql_err)?;
+        // A file that had no nodes has no stale nodes: the deletes are skipped for every file
+        // of the initial build.
+        if !self.files_with_nodes.insert(file_id) {
+            for sql in [
+                "DELETE FROM edges WHERE dst IN (SELECT id FROM nodes WHERE file = ?1 AND gen <> ?2)",
+                "DELETE FROM edges WHERE src IN (SELECT id FROM nodes WHERE file = ?1 AND gen <> ?2)",
+                "DELETE FROM nodes WHERE file = ?1 AND gen <> ?2",
+            ] {
+                conn.prepare_cached(sql).map_err(sql_err)?.execute(params![file_id, generation]).map_err(sql_err)?;
+            }
         }
         self.end_write()?;
         let cache = self.sym_cache.entry(file_id).or_default();
@@ -400,6 +409,7 @@ impl GraphIndex {
         self.end_write()?;
         self.file_ids.remove(path);
         self.sym_cache.remove(&file_id);
+        self.files_with_nodes.remove(&file_id);
         Ok(())
     }
 
