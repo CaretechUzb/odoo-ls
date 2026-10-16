@@ -61,7 +61,14 @@ pub fn setup_server(with_odoo: bool) -> (SyncOdoo, ConfigEntry) {
     };
     config.set_str(ConfigKey::PythonPath, python_cmd);
     config.set_str(ConfigKey::DiagMissingImports, S!("all"));
+    config.set_bool(ConfigKey::FileCache, test_file_cache());
     (server, config)
+}
+
+/// `file_cache` mode the suite runs in: `ODOOLS_TEST_FILE_CACHE=true` keeps every AST in memory,
+/// anything else (or unset) runs with the default, `false`, where ASTs of non-opened files are dropped.
+pub fn test_file_cache() -> bool {
+    env::var("ODOOLS_TEST_FILE_CACHE").is_ok_and(|v| v == "true" || v == "1")
 }
 
 pub fn create_init_session<'a>(odoo: &'a mut SyncOdoo, config: ConfigEntry) -> SessionInfo<'a> {
