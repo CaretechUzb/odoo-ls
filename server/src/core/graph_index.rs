@@ -1,8 +1,15 @@
 //! SQLite-backed graph of Python symbols (nodes) and their uses (edges).
 //!
 //! One `GraphIndex` lives on `SyncOdoo` and owns the single SQLite connection of the session.
-//! Everything runs on the thread that holds the `SyncOdoo` lock, so writes are synchronous and
-//! every committed write is immediately visible to reads.
+//! It is used from the thread that holds the `SyncOdoo` lock. Once the index is ready, writes
+//! are synchronous and every write is immediately visible to reads.
+//!
+//! During the initial build (`start_initial_build` .. `finish_initial_build`) the connection
+//! belongs to a writer thread instead: the build thread assigns file and node ids itself, keeps
+//! the node identities in memory, and queues the writes in order on a bounded channel, so the
+//! SQLite work runs next to the build rather than inside it. Nothing reads the index before it
+//! is ready, and `finish_initial_build` waits for the queue to drain. A failed write stops the
+//! writer; the error is returned by the next write or by `finish_initial_build`.
 //!
 //! Identity of a node is `(file, qualname, occurrence)`: `occurrence` is the 0-based index among
 //! same-qualname definitions of the file in source order (property getter/setter pairs,
@@ -14,6 +21,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use tracing::{info, warn};
@@ -140,9 +150,51 @@ pub struct EdgeSite {
     pub end: u32,
 }
 
+/// A write queued for the writer thread, with ids assigned by the build thread.
+enum WriteOp {
+    File { id: i64, path: String },
+    /// Insert or update the nodes, then delete the nodes of the file of another generation
+    /// (with their edges) if `delete_stale`.
+    Nodes { file: i64, generation: i64, nodes: Vec<(i64, NodeInfo)>, delete_stale: bool },
+    /// Delete the edges of `owner` of `delete_kinds`, then insert `rows`.
+    Edges { owner: i64, delete_kinds: Vec<i64>, rows: Vec<EdgeRow> },
+    DeleteFile { file: i64 },
+}
+
+struct WriterDone {
+    conn: Connection,
+    result: Result<(), String>,
+    busy: Duration,
+    ops: u64,
+}
+
+/// Build-thread side of the initial-build writer.
+#[derive(Debug)]
+struct Writer {
+    sender: Option<SyncSender<WriteOp>>,
+    handle: Option<JoinHandle<WriterDone>>,
+    next_file_id: i64,
+    next_node_id: i64,
+    /// Node id per (qualname, occurrence), per file id: the identities written so far.
+    identities: HashMap<i64, HashMap<(String, u32), i64>>,
+    /// Time the build thread spent blocked on a full queue.
+    send_wait: Duration,
+}
+
+impl std::fmt::Debug for WriteOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WriteOp")
+    }
+}
+
+/// Writes queued before the build thread blocks.
+const WRITE_QUEUE: usize = 1024;
+
 #[derive(Debug)]
 pub struct GraphIndex {
+    /// None while the writer thread owns the connection.
     conn: Option<Connection>,
+    writer: Option<Writer>,
     db_path: PathBuf,
     /// True once the initial build has drained. Before that, hierarchy requests return
     /// `INDEXING_IN_PROGRESS` and references use the legacy scan.
@@ -199,6 +251,7 @@ impl GraphIndex {
         info!("Graph index opened at {}", db_path.display());
         Ok(GraphIndex {
             conn: Some(conn),
+            writer: None,
             db_path,
             ready: false,
             file_ids: HashMap::default(),
@@ -235,9 +288,9 @@ impl GraphIndex {
         Ok(())
     }
 
-    /// Commit the open write batch.
+    /// Commit the open write batch. The writer thread commits its own batches.
     pub fn flush(&mut self) -> Result<(), String> {
-        if self.in_batch {
+        if self.in_batch && self.conn.is_some() {
             self.in_batch = false;
             self.batched_writes = 0;
             self.conn().execute_batch("COMMIT").map_err(sql_err)?;
@@ -247,6 +300,7 @@ impl GraphIndex {
 
     /// Drop every row. Used when the session (re)initializes.
     pub fn clear(&mut self) -> Result<(), String> {
+        self.join_writer()?;
         self.flush()?;
         self.conn().execute_batch("DELETE FROM edges; DELETE FROM nodes; DELETE FROM files;").map_err(sql_err)?;
         self.file_ids.clear();
@@ -257,8 +311,81 @@ impl GraphIndex {
         Ok(())
     }
 
+    /// Hand the connection to a writer thread until `finish_initial_build`. Only an empty
+    /// database is handed over (the identities of existing nodes are not known in memory).
+    pub fn start_initial_build(&mut self) -> Result<(), String> {
+        if self.writer.is_some() {
+            return Ok(());
+        }
+        self.flush()?;
+        let conn = self.conn();
+        let empty: bool = conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM nodes) AND NOT EXISTS(SELECT 1 FROM files)", [], |r| r.get(0)).map_err(sql_err)?;
+        if !empty {
+            return Ok(());
+        }
+        let conn = self.conn.take().expect("graph index connection is open");
+        let (sender, receiver) = sync_channel(WRITE_QUEUE);
+        let handle = std::thread::Builder::new()
+            .name("graph-index-writer".to_string())
+            .spawn(move || writer_loop(conn, receiver))
+            .map_err(|e| format!("cannot start the graph index writer: {e}"))?;
+        self.writer = Some(Writer {
+            sender: Some(sender),
+            handle: Some(handle),
+            next_file_id: 1,
+            next_node_id: 1,
+            identities: HashMap::default(),
+            send_wait: Duration::ZERO,
+        });
+        Ok(())
+    }
+
+    /// Wait for the writer thread to drain its queue and take the connection back.
+    pub fn finish_initial_build(&mut self) -> Result<(), String> {
+        self.join_writer()
+    }
+
+    fn join_writer(&mut self) -> Result<(), String> {
+        let Some(mut writer) = self.writer.take() else { return Ok(()) };
+        drop(writer.sender.take());
+        let start = Instant::now();
+        let joined = writer.handle.take().expect("writer thread handle").join();
+        let join_wait = start.elapsed();
+        match joined {
+            Ok(done) => {
+                self.conn = Some(done.conn);
+                info!(
+                    "Graph index writer: {} writes, busy {:?}, build thread blocked {:?} on a full queue and {:?} on the final drain",
+                    done.ops, done.busy, writer.send_wait, join_wait
+                );
+                done.result
+            },
+            Err(_) => Err("graph index writer panicked".to_string()),
+        }
+    }
+
+    /// Queue `op` for the writer thread. If the writer stopped on an error, that error.
+    fn send(&mut self, op: WriteOp) -> Result<(), String> {
+        let writer = self.writer.as_mut().expect("writer thread is running");
+        let start = Instant::now();
+        let sent = writer.sender.as_ref().expect("writer queue is open").send(op);
+        writer.send_wait += start.elapsed();
+        if sent.is_err() {
+            self.join_writer()?;
+            return Err("graph index writer stopped".to_string());
+        }
+        Ok(())
+    }
+
     pub fn file_id(&mut self, path: &str) -> Result<i64, String> {
         if let Some(&id) = self.file_ids.get(path) {
+            return Ok(id);
+        }
+        if let Some(writer) = self.writer.as_mut() {
+            let id = writer.next_file_id;
+            writer.next_file_id += 1;
+            self.send(WriteOp::File { id, path: path.to_string() })?;
+            self.file_ids.insert(path.to_string(), id);
             return Ok(id);
         }
         self.begin_write()?;
@@ -274,6 +401,9 @@ impl GraphIndex {
     fn existing_file_id(&mut self, path: &str) -> Result<Option<i64>, String> {
         if let Some(&id) = self.file_ids.get(path) {
             return Ok(Some(id));
+        }
+        if self.writer.is_some() {
+            return Ok(None); // every file of the session is in `file_ids`
         }
         let id: Option<i64> = self.conn().prepare_cached("SELECT id FROM files WHERE path = ?1").map_err(sql_err)?
             .query_row(params![path], |r| r.get(0)).optional().map_err(sql_err)?;
@@ -314,8 +444,24 @@ impl GraphIndex {
     /// Insert or update the node of `sym`, keeping its id if `(file, qualname, occurrence)` exists.
     pub fn upsert_node(&mut self, sym: SymbolKey, info: &NodeInfo) -> Result<i64, String> {
         let file_id = self.file_id(&info.path)?;
-        self.begin_write()?;
         self.files_with_nodes.insert(file_id);
+        if let Some(writer) = self.writer.as_mut() {
+            let identities = writer.identities.entry(file_id).or_default();
+            let id = match identities.get(&(info.qualname.clone(), info.occurrence)) {
+                Some(&id) => id,
+                None => {
+                    let id = writer.next_node_id;
+                    writer.next_node_id += 1;
+                    identities.insert((info.qualname.clone(), info.occurrence), id);
+                    id
+                }
+            };
+            let generation = self.generation;
+            self.send(WriteOp::Nodes { file: file_id, generation, nodes: vec![(id, info.clone())], delete_stale: false })?;
+            self.sym_cache.entry(file_id).or_default().insert(sym, id);
+            return Ok(id);
+        }
+        self.begin_write()?;
         let id = GraphIndex::upsert_node_row(self.conn(), file_id, info, self.generation)?;
         self.sym_cache.entry(file_id).or_default().insert(sym, id);
         Ok(id)
@@ -324,10 +470,39 @@ impl GraphIndex {
     /// Rewrite the nodes of the file at `path`: upsert every given node (ids of unchanged
     /// identities are kept, so edges pointing at them survive) and delete the nodes of that
     /// file that are not in `nodes`, with the edges from, to or owned by them.
-    pub fn replace_file_nodes(&mut self, path: &str, nodes: &[(SymbolKey, NodeInfo)]) -> Result<Vec<i64>, String> {
+    pub fn replace_file_nodes(&mut self, path: &str, nodes: impl Into<Vec<(SymbolKey, NodeInfo)>>) -> Result<Vec<i64>, String> {
+        let nodes: Vec<(SymbolKey, NodeInfo)> = nodes.into();
         let file_id = self.file_id(path)?;
         self.generation += 1;
         let generation = self.generation;
+        if let Some(writer) = self.writer.as_mut() {
+            let had_nodes = !self.files_with_nodes.insert(file_id);
+            let previous = writer.identities.remove(&file_id).unwrap_or_default();
+            let mut identities: HashMap<(String, u32), i64> = HashMap::default();
+            let mut ids = Vec::with_capacity(nodes.len());
+            for (_, info) in nodes.iter() {
+                let key = (info.qualname.clone(), info.occurrence);
+                let id = match identities.get(&key).or_else(|| previous.get(&key)) {
+                    Some(&id) => id,
+                    None => {
+                        let id = writer.next_node_id;
+                        writer.next_node_id += 1;
+                        id
+                    }
+                };
+                identities.insert(key, id);
+                ids.push(id);
+            }
+            writer.identities.insert(file_id, identities);
+            let cache = self.sym_cache.entry(file_id).or_default();
+            cache.clear();
+            for ((sym, _), id) in nodes.iter().zip(ids.iter()) {
+                cache.insert(*sym, *id);
+            }
+            let rows = ids.iter().copied().zip(nodes.into_iter().map(|(_, info)| info)).collect();
+            self.send(WriteOp::Nodes { file: file_id, generation, nodes: rows, delete_stale: had_nodes })?;
+            return Ok(ids);
+        }
         self.begin_write()?;
         let conn = self.conn.as_ref().expect("graph index connection is open");
         let mut ids = Vec::with_capacity(nodes.len());
@@ -337,13 +512,7 @@ impl GraphIndex {
         // A file that had no nodes has no stale nodes: the deletes are skipped for every file
         // of the initial build.
         if !self.files_with_nodes.insert(file_id) {
-            for sql in [
-                "DELETE FROM edges WHERE dst IN (SELECT id FROM nodes WHERE file = ?1 AND gen <> ?2)",
-                "DELETE FROM edges WHERE src IN (SELECT id FROM nodes WHERE file = ?1 AND gen <> ?2)",
-                "DELETE FROM nodes WHERE file = ?1 AND gen <> ?2",
-            ] {
-                conn.prepare_cached(sql).map_err(sql_err)?.execute(params![file_id, generation]).map_err(sql_err)?;
-            }
+            delete_stale_nodes(conn, file_id, generation)?;
         }
         self.end_write()?;
         let cache = self.sym_cache.entry(file_id).or_default();
@@ -355,39 +524,18 @@ impl GraphIndex {
     }
 
     /// Replace the edges of kinds `kinds` owned by node `owner` with `edges`.
-    pub fn replace_edges(&mut self, owner: i64, kinds: &[i64], edges: &[EdgeRow]) -> Result<(), String> {
-        self.begin_write()?;
-        let conn = self.conn.as_ref().expect("graph index connection is open");
-        for kind in kinds {
-            // An owner that never wrote edges of this kind in this session has none.
-            if !self.written_owners.contains(&(owner, *kind)) {
-                continue;
-            }
-            let sql = if VALIDATION_KINDS.contains(kind) {
-                "DELETE FROM edges WHERE src = ?1 AND kind = ?2 AND owner = ?1"
-            } else {
-                "DELETE FROM edges WHERE kind = ?2 AND owner = ?1 AND src IN (SELECT id FROM nodes WHERE file = (SELECT file FROM nodes WHERE id = ?1))"
-            };
-            conn.prepare_cached(sql).map_err(sql_err)?.execute(params![owner, kind]).map_err(sql_err)?;
-        }
+    pub fn replace_edges(&mut self, owner: i64, kinds: &[i64], edges: impl Into<Vec<EdgeRow>>) -> Result<(), String> {
+        // An owner that never wrote edges of a kind in this session has none to delete.
+        let delete_kinds: Vec<i64> = kinds.iter().copied().filter(|kind| self.written_owners.contains(&(owner, *kind))).collect();
         for kind in kinds {
             self.written_owners.insert((owner, *kind));
         }
-        for chunk in edges.chunks(EDGES_PER_INSERT) {
-            let mut sql = String::from("INSERT OR IGNORE INTO edges(src, dst, kind, owner, from_file, start, end, dst_model, dst_name, dst_model_parent, flags) VALUES ");
-            for i in 0..chunk.len() {
-                if i > 0 {
-                    sql.push(',');
-                }
-                sql.push_str("(?,?,?,?,?,?,?,?,?,?,?)");
-            }
-            let mut insert = conn.prepare_cached(&sql).map_err(sql_err)?;
-            let mut values: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 11);
-            for e in chunk {
-                values.extend_from_slice(&[&e.src, &e.dst, &e.kind, &owner, &e.from_file, &e.start, &e.end, &e.dst_model, &e.dst_name, &e.dst_model_parent, &e.flags]);
-            }
-            insert.execute(values.as_slice()).map_err(sql_err)?;
+        let edges: Vec<EdgeRow> = edges.into();
+        if self.writer.is_some() {
+            return self.send(WriteOp::Edges { owner, delete_kinds, rows: edges });
         }
+        self.begin_write()?;
+        write_edges(self.conn(), owner, &delete_kinds, &edges)?;
         self.end_write()
     }
 
@@ -396,17 +544,14 @@ impl GraphIndex {
         let Some(file_id) = self.existing_file_id(path)? else {
             return Ok(());
         };
-        self.begin_write()?;
-        let tx = self.conn();
-        for sql in [
-            "DELETE FROM edges WHERE dst IN (SELECT id FROM nodes WHERE file = ?1)",
-            "DELETE FROM edges WHERE src IN (SELECT id FROM nodes WHERE file = ?1)",
-            "DELETE FROM nodes WHERE file = ?1",
-        ] {
-            tx.prepare_cached(sql).map_err(sql_err)?.execute(params![file_id]).map_err(sql_err)?;
+        if let Some(writer) = self.writer.as_mut() {
+            writer.identities.remove(&file_id);
+            self.send(WriteOp::DeleteFile { file: file_id })?;
+        } else {
+            self.begin_write()?;
+            delete_file_rows(self.conn(), file_id)?;
+            self.end_write()?;
         }
-        tx.prepare_cached("DELETE FROM files WHERE id = ?1").map_err(sql_err)?.execute(params![file_id]).map_err(sql_err)?;
-        self.end_write()?;
         self.file_ids.remove(path);
         self.sym_cache.remove(&file_id);
         self.files_with_nodes.remove(&file_id);
@@ -416,7 +561,9 @@ impl GraphIndex {
     /// Remove every row of files under the directory `dir`.
     pub fn delete_dir(&mut self, dir: &str) -> Result<(), String> {
         let prefix = format!("{}/", dir.trim_end_matches('/'));
-        let paths: Vec<String> = {
+        let paths: Vec<String> = if self.writer.is_some() {
+            self.file_ids.keys().filter(|path| path.starts_with(&prefix)).cloned().collect()
+        } else {
             let mut stmt = self.conn().prepare_cached("SELECT path FROM files WHERE substr(path, 1, length(?1)) = ?1").map_err(sql_err)?;
             let rows = stmt.query_map(params![prefix], |r| r.get(0)).map_err(sql_err)?;
             rows.collect::<Result<Vec<String>, _>>().map_err(sql_err)?
@@ -553,8 +700,118 @@ impl GraphIndex {
     }
 }
 
+/// Delete the nodes of `file` whose generation is not `generation`, and their edges.
+fn delete_stale_nodes(conn: &Connection, file: i64, generation: i64) -> Result<(), String> {
+    for sql in [
+        "DELETE FROM edges WHERE dst IN (SELECT id FROM nodes WHERE file = ?1 AND gen <> ?2)",
+        "DELETE FROM edges WHERE src IN (SELECT id FROM nodes WHERE file = ?1 AND gen <> ?2)",
+        "DELETE FROM nodes WHERE file = ?1 AND gen <> ?2",
+    ] {
+        conn.prepare_cached(sql).map_err(sql_err)?.execute(params![file, generation]).map_err(sql_err)?;
+    }
+    Ok(())
+}
+
+/// Delete the edges of `owner` of `delete_kinds`, then insert `edges`.
+fn write_edges(conn: &Connection, owner: i64, delete_kinds: &[i64], edges: &[EdgeRow]) -> Result<(), String> {
+    for kind in delete_kinds {
+        let sql = if VALIDATION_KINDS.contains(kind) {
+            "DELETE FROM edges WHERE src = ?1 AND kind = ?2 AND owner = ?1"
+        } else {
+            "DELETE FROM edges WHERE kind = ?2 AND owner = ?1 AND src IN (SELECT id FROM nodes WHERE file = (SELECT file FROM nodes WHERE id = ?1))"
+        };
+        conn.prepare_cached(sql).map_err(sql_err)?.execute(params![owner, kind]).map_err(sql_err)?;
+    }
+    for chunk in edges.chunks(EDGES_PER_INSERT) {
+        let mut sql = String::from("INSERT OR IGNORE INTO edges(src, dst, kind, owner, from_file, start, end, dst_model, dst_name, dst_model_parent, flags) VALUES ");
+        for i in 0..chunk.len() {
+            if i > 0 {
+                sql.push(',');
+            }
+            sql.push_str("(?,?,?,?,?,?,?,?,?,?,?)");
+        }
+        let mut insert = conn.prepare_cached(&sql).map_err(sql_err)?;
+        let mut values: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 11);
+        for e in chunk {
+            values.extend_from_slice(&[&e.src, &e.dst, &e.kind, &owner, &e.from_file, &e.start, &e.end, &e.dst_model, &e.dst_name, &e.dst_model_parent, &e.flags]);
+        }
+        insert.execute(values.as_slice()).map_err(sql_err)?;
+    }
+    Ok(())
+}
+
+/// Delete every row of the file `file`.
+fn delete_file_rows(conn: &Connection, file: i64) -> Result<(), String> {
+    for sql in [
+        "DELETE FROM edges WHERE dst IN (SELECT id FROM nodes WHERE file = ?1)",
+        "DELETE FROM edges WHERE src IN (SELECT id FROM nodes WHERE file = ?1)",
+        "DELETE FROM nodes WHERE file = ?1",
+        "DELETE FROM files WHERE id = ?1",
+    ] {
+        conn.prepare_cached(sql).map_err(sql_err)?.execute(params![file]).map_err(sql_err)?;
+    }
+    Ok(())
+}
+
+fn apply_write(conn: &Connection, op: WriteOp) -> Result<(), String> {
+    match op {
+        WriteOp::File { id, path } => {
+            conn.prepare_cached("INSERT INTO files(id, path) VALUES (?1, ?2)").map_err(sql_err)?
+                .execute(params![id, path]).map_err(sql_err)?;
+        },
+        WriteOp::Nodes { file, generation, nodes, delete_stale } => {
+            let mut upsert = conn.prepare_cached(
+                "INSERT INTO nodes(id, file, qualname, occurrence, name, kind, model, r_start, r_end, s_start, s_end, gen)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, model = excluded.model,
+                     r_start = excluded.r_start, r_end = excluded.r_end, s_start = excluded.s_start, s_end = excluded.s_end, gen = excluded.gen"
+            ).map_err(sql_err)?;
+            for (id, info) in nodes.iter() {
+                upsert.execute(params![
+                    id, file, info.qualname, info.occurrence, info.name, info.kind, info.model,
+                    info.range.0, info.range.1, info.selection.0, info.selection.1, generation
+                ]).map_err(sql_err)?;
+            }
+            if delete_stale {
+                delete_stale_nodes(conn, file, generation)?;
+            }
+        },
+        WriteOp::Edges { owner, delete_kinds, rows } => write_edges(conn, owner, &delete_kinds, &rows)?,
+        WriteOp::DeleteFile { file } => delete_file_rows(conn, file)?,
+    }
+    Ok(())
+}
+
+/// Writer thread: applies the queued writes in order, committing every `BATCH_WRITES` writes,
+/// until the queue is closed or a write fails.
+fn writer_loop(conn: Connection, receiver: Receiver<WriteOp>) -> WriterDone {
+    let mut busy = Duration::ZERO;
+    let mut ops = 0u64;
+    let result = (|| {
+        conn.execute_batch("BEGIN").map_err(sql_err)?;
+        let mut batched = 0u32;
+        for op in receiver.iter() {
+            let start = Instant::now();
+            apply_write(&conn, op)?;
+            ops += 1;
+            batched += 1;
+            if batched >= BATCH_WRITES {
+                conn.execute_batch("COMMIT; BEGIN").map_err(sql_err)?;
+                batched = 0;
+            }
+            busy += start.elapsed();
+        }
+        conn.execute_batch("COMMIT").map_err(sql_err)
+    })();
+    if result.is_err() && !conn.is_autocommit() {
+        let _ = conn.execute_batch("ROLLBACK");
+    }
+    WriterDone { conn, result, busy, ops }
+}
+
 impl Drop for GraphIndex {
     fn drop(&mut self) {
+        let _ = self.join_writer();
         drop(self.conn.take());
         remove_db_files(&self.db_path);
     }

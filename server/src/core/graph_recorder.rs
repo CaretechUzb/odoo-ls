@@ -422,7 +422,7 @@ fn write_file_nodes(session: &mut SessionInfo, file: SourceFileKey) -> Result<()
     }
     let mut graph = take_index(session)?;
     let result = (|| {
-        graph.replace_file_nodes(&path, &nodes)?;
+        graph.replace_file_nodes(&path, nodes)?;
         Ok::<(), String>(())
     })();
     put_index(session, graph);
@@ -483,7 +483,7 @@ fn write_unit(session: &mut SessionInfo, unit: SymbolKey, file: SourceFileKey, e
                 flags: edge.flags,
             });
         }
-        graph.replace_edges(owner, kinds, &rows)
+        graph.replace_edges(owner, kinds, rows)
     })();
     put_index(session, graph);
     result
@@ -515,7 +515,8 @@ pub fn disable(session: &mut SessionInfo, reason: &str) {
     session.sync_odoo.graph_unavailable = Some(reason.to_string());
 }
 
-/// Hook at the start of `SyncOdoo::init`: open the index (once per `SyncOdoo`) or clear it.
+/// Hook at the start of `SyncOdoo::init`: open the index (once per `SyncOdoo`) or clear it,
+/// then hand it to its writer thread for the initial build.
 pub fn on_init(session: &mut SessionInfo) {
     if session.sync_odoo.graph_unavailable.is_some() && session.sync_odoo.graph_index.is_none() {
         return; // failed once, stays off for the session
@@ -541,15 +542,21 @@ pub fn on_init(session: &mut SessionInfo) {
             }
         }
     }
+    if let Some(graph) = session.sync_odoo.graph_index.as_mut()
+        && let Err(e) = graph.start_initial_build() {
+            disable(session, &e);
+            return;
+        }
     session.sync_odoo.graph_recorder = Some(GraphRecorder::default());
 }
 
-/// Hook at the end of `SyncOdoo::init`: the initial build has drained, the index is ready.
+/// Hook at the end of `SyncOdoo::init`: the initial build has drained; once the writer thread
+/// has written everything, the index is ready.
 pub fn on_init_done(session: &mut SessionInfo) {
     let (units, files_validated, files_arch_evaluated) = session.sync_odoo.graph_recorder.as_ref()
         .map(|r| (r.units_written, r.files_validated, r.files_arch_evaluated)).unwrap_or_default();
     let Some(graph) = session.sync_odoo.graph_index.as_mut() else { return };
-    if let Err(e) = graph.flush() {
+    if let Err(e) = graph.finish_initial_build().and_then(|_| graph.flush()) {
         disable(session, &e);
         return;
     }

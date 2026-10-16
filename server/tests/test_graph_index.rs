@@ -151,3 +151,66 @@ fn test_initial_index_has_fixture_nodes_and_edges() {
     assert_eq!(class.info.model.as_deref(), Some("pygls.tests.base_test_model"));
     assert!(!graph.references(class.id, Some("pygls.tests.base_test_model")).unwrap().is_empty());
 }
+
+/// Runs a sequence of writes with rewrites, re-validations, upserts of existing identities and
+/// deletions, and describes the result by identities (ids may differ between write modes).
+fn write_sequence_and_describe(graph: &mut GraphIndex, initial_build: bool) -> Vec<String> {
+    if initial_build {
+        graph.start_initial_build().unwrap();
+    }
+    let a = graph.replace_file_nodes("/a.py", &[(sym(0), node("/a.py", "", 0)), (sym(1), node("/a.py", "f", 0)), (sym(2), node("/a.py", "g", 0)), (sym(3), node("/a.py", "C", 0))]).unwrap();
+    let b = graph.replace_file_nodes("/b.py", &[(sym(4), node("/b.py", "", 0)), (sym(5), node("/b.py", "caller", 0)), (sym(6), node("/b.py", "D", 0))]).unwrap();
+    let b_file = graph.file_id("/b.py").unwrap();
+    graph.replace_edges(b[1], VALIDATION_KINDS, &[edge(b[1], a[1], EDGE_CALL, b_file, 5), edge(b[1], a[2], EDGE_CALL, b_file, 9), edge(b[1], a[3], EDGE_REF, b_file, 12)]).unwrap();
+    graph.replace_edges(b[0], &[EDGE_INHERITS], &[edge(b[2], a[3], EDGE_INHERITS, b_file, 0)]).unwrap();
+    // re-validation and re-evaluation of the same owners
+    graph.replace_edges(b[1], VALIDATION_KINDS, &[edge(b[1], a[1], EDGE_CALL, b_file, 6), edge(b[1], a[2], EDGE_CALL, b_file, 9), edge(b[1], a[2], EDGE_CALL, b_file, 9)]).unwrap();
+    graph.replace_edges(b[0], &[EDGE_INHERITS], &[edge(b[2], a[3], EDGE_INHERITS, b_file, 1)]).unwrap();
+    // upsert of an existing identity keeps its id; of a new file creates it
+    assert_eq!(graph.upsert_node(sym(7), &node("/a.py", "f", 0)).unwrap(), a[1]);
+    let h = graph.upsert_node(sym(8), &node("/c.py", "h", 0)).unwrap();
+    let c_file = graph.file_id("/c.py").unwrap();
+    graph.replace_edges(h, VALIDATION_KINDS, &[edge(h, a[1], EDGE_CALL, c_file, 3), edge(h, a[2], EDGE_REF, c_file, 7)]).unwrap();
+    // a.py evaluated again without g: g and the edges to it go, f keeps its id
+    let a2 = graph.replace_file_nodes("/a.py", &[(sym(9), node("/a.py", "", 0)), (sym(10), node("/a.py", "f", 0)), (sym(11), node("/a.py", "g2", 0)), (sym(12), node("/a.py", "C", 0))]).unwrap();
+    assert_eq!(a2[1], a[1]);
+    // a directory and a file deleted on disk
+    let x = graph.replace_file_nodes("/d/x.py", &[(sym(13), node("/d/x.py", "", 0)), (sym(14), node("/d/x.py", "k", 0))]).unwrap();
+    let x_file = graph.file_id("/d/x.py").unwrap();
+    graph.replace_edges(x[1], VALIDATION_KINDS, &[edge(x[1], a[1], EDGE_CALL, x_file, 2)]).unwrap();
+    graph.delete_dir("/d").unwrap();
+    let y = graph.replace_file_nodes("/e.py", &[(sym(15), node("/e.py", "", 0)), (sym(16), node("/e.py", "m", 0))]).unwrap();
+    let e_file = graph.file_id("/e.py").unwrap();
+    graph.replace_edges(y[1], VALIDATION_KINDS, &[edge(y[1], a[3], EDGE_REF, e_file, 4)]).unwrap();
+    graph.delete_file("/c.py").unwrap();
+    if initial_build {
+        graph.finish_initial_build().unwrap();
+    }
+
+    let mut description = vec![format!("{:?}", graph.counts().unwrap())];
+    for (path, qualname) in [("/a.py", "f"), ("/a.py", "g"), ("/a.py", "g2"), ("/a.py", "C"), ("/b.py", "caller"), ("/b.py", "D"), ("/c.py", "h"), ("/d/x.py", "k"), ("/e.py", "m")] {
+        let Some(row) = graph.node_by_identity(path, qualname, 0).unwrap() else {
+            description.push(format!("{path}:{qualname} absent"));
+            continue;
+        };
+        let callers: Vec<String> = graph.incoming_calls(row.id, None).unwrap().into_iter().map(|(n, s)| format!("{}:{}@{}", n.info.path, n.info.qualname, s.start)).collect();
+        let callees: Vec<String> = graph.outgoing_calls(row.id).unwrap().into_iter().map(|(n, s)| format!("{}:{}@{}", n.info.path, n.info.qualname, s.start)).collect();
+        let references: Vec<String> = graph.references(row.id, None).unwrap().into_iter().map(|s| format!("{}@{}", s.path, s.start)).collect();
+        let subtypes: Vec<String> = graph.subtypes(row.id, None).unwrap().into_iter().map(|n| format!("{}:{}", n.info.path, n.info.qualname)).collect();
+        description.push(format!("{path}:{qualname} callers={callers:?} callees={callees:?} references={references:?} subtypes={subtypes:?}"));
+    }
+    description
+}
+
+#[test]
+fn test_initial_build_writer_gives_the_same_index() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let mut synchronous = GraphIndex::open_in(dir.path()).unwrap();
+    let mut queued = GraphIndex::open_in(dir.path()).unwrap();
+    let expected = write_sequence_and_describe(&mut synchronous, false);
+    assert_eq!(write_sequence_and_describe(&mut queued, true), expected);
+    assert_eq!(expected[0], "(3, 9, 3)", "files, nodes and edges left: {expected:?}");
+    // after the initial build, writes are synchronous again and see the queued rows
+    queued.delete_file("/b.py").unwrap();
+    assert_eq!(queued.counts().unwrap(), (2, 6, 1));
+}
