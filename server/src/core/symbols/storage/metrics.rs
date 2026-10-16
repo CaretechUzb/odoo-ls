@@ -43,10 +43,15 @@ impl PhaseMemoryLogger {
         if arch_empty && eval_empty && val_empty { self.log(st, "VALIDATION drained"); }
     }
     fn log(&self, st: &SymbolTable, label: &str) {
-        log_memory_usage(label);
-        info!("[mem] {} symbol counts: roots={} namespaces={} packages={} modules={} files={} classes={} functions={} variables={} xml={} csv={}", label,
-            st.roots.len(), st.namespaces.len(), st.python_packages.len(), st.modules.len(), st.files.len(), st.classes.len(), st.functions.len(), st.variables.len(), st.xml_files.len(), st.csv_files.len());
+        log_phase_memory(st, label);
     }
+}
+
+/// jemalloc stats + symbol counts at info level, labelled.
+pub fn log_phase_memory(st: &SymbolTable, label: &str) {
+    log_memory_usage(label);
+    info!("[mem] {} symbol counts: roots={} namespaces={} packages={} modules={} files={} classes={} functions={} variables={} xml={} csv={}", label,
+        st.roots.len(), st.namespaces.len(), st.python_packages.len(), st.modules.len(), st.files.len(), st.classes.len(), st.functions.len(), st.variables.len(), st.xml_files.len(), st.csv_files.len());
 }
 
 pub fn log_is_in_workspace(symbol_table: &SymbolTable) {

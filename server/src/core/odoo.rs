@@ -9,7 +9,7 @@ use crate::core::module_load_order::sort_by_load_order;
 use crate::core::pre_parser::{PreParseCache, PreParser};
 use crate::core::symbols::ModuleSymbol;
 use crate::core::symbols::storage::{FileSystemSymbolParent, JsFileParent, SymbolTable};
-use crate::core::symbols::storage::metrics::{log_slotmap_capacities, log_symbol_counts, log_memory_usage};
+use crate::core::symbols::storage::metrics::{log_slotmap_capacities, log_symbol_counts, log_memory_usage, log_phase_memory};
 use crate::core::symbols::symbol_keys::{BuildableSymbolKey, FileSystemSymbolKey, FunctionKey, ModuleKey, NamespaceKey, SourceFileKey, SymbolKey, Wk, XmlId, XmlTemplateKey};
 use crate::core::symbols::symbol_table_impl::CreateError;
 use crate::core::tsserver_bridge::{TsServerBridge};
@@ -727,11 +727,13 @@ impl SyncOdoo {
 
             // Update pre_parser on module build progress
             pre_parser.on_module_built(i);
+            if i % 100 == 0 { log_memory_usage(&format!("modules built: {}/{}", i, n_modules)); }
         }
         // Module-build phase done: tear down the pool (joins workers) and drop the cache.
         session.sync_odoo.pre_parse_cache = None;
         drop(pre_parser);
 
+        log_phase_memory(session.st(), "module ARCH+ARCH_EVAL built");
         // Run deferred subfunction invalidations
         if let Some(mut files) = session.sync_odoo.deferred_subfunc_invalidation.take() {
             while let Some(file) = files.pop_front_valid(session.st()) {
@@ -746,6 +748,7 @@ impl SyncOdoo {
             // report progress (total_items > 0, otherwise loop wouldn't run)
             reporter.report_progress(BUILD_PHASE_WEIGHT + (total_items - items_left) * (VALIDATION_PHASE_WEIGHT) / total_items);
         }
+        log_phase_memory(session.st(), "module VALIDATION drained");
         session.sync_odoo.import_cache = None;
         let modules_count = session.sync_odoo.modules.len();
         reporter.end();
