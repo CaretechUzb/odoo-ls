@@ -742,12 +742,23 @@ impl SyncOdoo {
         }
         // Drain validation queue
         let total_items = BuildScheduler::validation_queue_len(session) as u32;
+        // Without file_cache, the ASTs were dropped after ARCH_EVAL: parse them again ahead of validation.
+        let pre_parser = (!session.sync_odoo.config.file_cache()).then(|| PreParser::for_validation(session));
+        session.sync_odoo.pre_parse_cache = pre_parser.as_ref().map(|pre_parser| pre_parser.cache.clone());
         while BuildScheduler::build_one(session, &main_entry, true) {
-            if session.sync_odoo.terminate_rebuild.load(Ordering::Relaxed) { return; }
+            if session.sync_odoo.terminate_rebuild.load(Ordering::Relaxed) {
+                session.sync_odoo.pre_parse_cache = None;
+                return;
+            }
             let items_left = BuildScheduler::validation_queue_len(session) as u32;
+            if let Some(pre_parser) = &pre_parser {
+                pre_parser.on_validation_progress(session);
+            }
             // report progress (total_items > 0, otherwise loop wouldn't run)
             reporter.report_progress(BUILD_PHASE_WEIGHT + (total_items - items_left) * (VALIDATION_PHASE_WEIGHT) / total_items);
         }
+        session.sync_odoo.pre_parse_cache = None;
+        drop(pre_parser);
         log_phase_memory(session.st(), "module VALIDATION drained");
         session.sync_odoo.import_cache = None;
         let modules_count = session.sync_odoo.modules.len();

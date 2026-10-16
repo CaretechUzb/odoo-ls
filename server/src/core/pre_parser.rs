@@ -23,7 +23,8 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 use std::thread::JoinHandle;
 
 use ruff_source_file::PositionEncoding;
@@ -31,7 +32,8 @@ use ruff_source_file::PositionEncoding;
 use crate::constants::DEBUG_PRE_PARSER;
 use crate::core::file_mgr::{Ast, JS_PARSE_STACK_SIZE, PreloadedFile, hash_text_document, parse_js_inner, parse_python, python_source_type};
 use crate::core::symbols::ModuleSymbol;
-use crate::core::symbols::symbol_keys::ModuleKey;
+use crate::core::build_scheduler::BuildScheduler;
+use crate::core::symbols::symbol_keys::{BuildableSymbolKey, ModuleKey};
 use crate::core::text_document::TextDocument;
 use crate::threads::SessionInfo;
 use crate::utils::{HashMap, PathSanitizer};
@@ -58,19 +60,31 @@ fn n_workers() -> usize {
         .clamp(1, MAX_PRE_PARSE_WORKERS)
 }
 
+/// How many jobs (modules, or files for [`PreParser::for_validation`]) past the last built one the
+/// workers may prepare. A prepared file stays in the cache until the build reaches it, so this
+/// bounds the memory held by prepared but not yet consumed files: without it, the workers outrun
+/// the build thread and hold the parsed ASTs of nearly every module at once. Measured on ~2000
+/// modules: below 64 the peak does not drop further but the build waits on the workers.
+const PRE_PARSE_WINDOW: usize = 64;
+
 /// Directory names skipped when walking a module for Python sources.
 const SKIPPED_DIRS: &[&str] = &[
     "__pycache__", "static", "node_modules", "migrations", "upgrades",
     "i18n", "views", "data", "security", "description", "doc", "docs",
 ];
 
-/// One unit of work submitted for the worker pool: a module at position
-/// `module_idx` in build order, its on-disk root, and the explicit list of data files.
-/// Its assets are whatever its `static/` folders hold, so the worker walks for them itself.
+/// One unit of work submitted for the worker pool, at position `module_idx` in build order.
 struct Job {
     module_idx: usize,
-    module_path: PathBuf,
-    data_files: Vec<PathBuf>,
+    kind: JobKind,
+}
+
+enum JobKind {
+    /// A module: its on-disk root, and the explicit list of data files. Its assets are whatever
+    /// its `static/` folders hold, so the worker walks for them itself.
+    Module { module_path: PathBuf, data_files: Vec<PathBuf> },
+    /// A Python file whose AST was dropped after its build, parsed again ahead of its validation.
+    PythonFile(PathBuf),
 }
 
 #[derive(Debug, Default)]
@@ -164,21 +178,54 @@ struct WorkerCtx {
 pub struct PreParser {
     pub cache: Arc<PreParseCache>,
     last_built_module_idx: Arc<AtomicUsize>,
+    /// Signalled on build progress, for workers waiting on [`PRE_PARSE_WINDOW`].
+    build_progress: Arc<(Mutex<()>, Condvar)>,
     job_queue: Arc<Mutex<VecDeque<Job>>>,
     workers: Vec<JoinHandle<()>>,
+    /// For [`Self::for_validation`]: the job index of each file to validate.
+    file_positions: HashMap<BuildableSymbolKey, usize>,
 }
 
 impl PreParser {
     pub fn new(session: &SessionInfo, sorted_modules: &[ModuleKey]) -> Self {
+        Self::start(session, Self::create_job_queue(session, sorted_modules))
+    }
+
+    /// Parse the Python files waiting for validation ahead of it. The build thread reports its
+    /// progress with [`Self::on_validation_progress`].
+    pub fn for_validation(session: &SessionInfo) -> Self {
+        let files = BuildScheduler::python_files_to_validate(session);
+        let mut jobs = VecDeque::with_capacity(files.len());
+        let mut file_positions = HashMap::default();
+        for (module_idx, (key, path)) in files.into_iter().enumerate() {
+            file_positions.insert(key, module_idx);
+            jobs.push_back(Job { module_idx, kind: JobKind::PythonFile(path) });
+        }
+        let mut pre_parser = Self::start(session, jobs);
+        pre_parser.file_positions = file_positions;
+        pre_parser
+    }
+
+    /// Validation counterpart of [`Self::on_module_built`]: every file before the next one to
+    /// validate is done.
+    pub fn on_validation_progress(&self, session: &SessionInfo) {
+        if let Some(next) = BuildScheduler::next_python_file_to_validate(session)
+            && let Some(&position) = self.file_positions.get(&next) {
+                self.on_module_built(position.saturating_sub(1));
+            }
+    }
+
+    fn start(session: &SessionInfo, jobs: VecDeque<Job>) -> Self {
         let cache = Arc::new(PreParseCache::default());
         let last_built_module_idx = Arc::new(AtomicUsize::default());
+        let build_progress = Arc::new((Mutex::new(()), Condvar::new()));
         let ctx = WorkerCtx {
             cache: cache.clone(),
             encoding: session.sync_odoo.encoding,
             test_mode: session.sync_odoo.test_mode,
             javascript_disabled: session.sync_odoo.config.is_javascript_disabled(),
         };
-        let job_queue = Arc::new(Mutex::new(Self::create_job_queue(session, sorted_modules)));
+        let job_queue = Arc::new(Mutex::new(jobs));
         let n_workers = n_workers();
         let mut workers = Vec::with_capacity(n_workers);
         // Spawn the worker pool.
@@ -186,6 +233,7 @@ impl PreParser {
             let job_queue = job_queue.clone();
             let ctx = ctx.clone();
             let last_built_module_idx = last_built_module_idx.clone();
+            let build_progress = build_progress.clone();
             let terminate = session.sync_odoo.terminate_rebuild.clone();
             // 8 MiB stack so workers can run parse_js_inner without a nested spawn.
             let worker = std::thread::Builder::new()
@@ -198,26 +246,49 @@ impl PreParser {
                         let Some(job) = job_queue.lock().unwrap().pop_front() else {
                             return; // no more jobs, end thread
                         };
+                        // Wait (without holding the queue) until the job is within the window.
+                        let (lock, progress) = &*build_progress;
+                        let mut guard = lock.lock().unwrap();
+                        while job.module_idx > last_built_module_idx.load(Ordering::Relaxed).saturating_add(PRE_PARSE_WINDOW)
+                            && !terminate.load(Ordering::Relaxed) {
+                            // The timeout catches `terminate`, which is set without a notification.
+                            guard = progress.wait_timeout(guard, Duration::from_millis(100)).unwrap().0;
+                        }
+                        drop(guard);
+                        if terminate.load(Ordering::Relaxed) { return; }
                         if job.module_idx <= last_built_module_idx.load(Ordering::Relaxed) {
                             // The build has already passed this module, skip it.
                             ctx.cache.stats.record_skipped();
                             continue;
                         }
-                        pre_parse_module(&ctx, job);
+                        match job.kind {
+                            JobKind::Module { module_path, data_files } => pre_parse_module(&ctx, job.module_idx, module_path, data_files),
+                            JobKind::PythonFile(path) => pre_parse_python(&ctx, job.module_idx, &path),
+                        }
                     }
                 })
             .expect("failed to spawn pre-parse worker");
             workers.push(worker);
         }
-        PreParser { cache, last_built_module_idx, job_queue, workers }
+        PreParser { cache, last_built_module_idx, build_progress, job_queue, workers, file_positions: HashMap::default() }
     }
 
     /// Keep track of the build thread's progress so that workers can skip
     /// jobs that are already past if they are running late.
     /// Drops entries for the already built module (as they can no longer be hits).
     pub fn on_module_built(&self, module_idx: usize) {
-        self.last_built_module_idx.store(module_idx, Ordering::Relaxed);
-        self.cache.evict_entries(module_idx);
+        let previous = self.last_built_module_idx.load(Ordering::Relaxed);
+        self.notify_progress(module_idx);
+        for idx in previous + 1..=module_idx {
+            self.cache.evict_entries(idx);
+        }
+    }
+
+    fn notify_progress(&self, last_built_module_idx: usize) {
+        let (lock, progress) = &*self.build_progress;
+        let _guard = lock.lock().unwrap();
+        self.last_built_module_idx.store(last_built_module_idx, Ordering::Relaxed);
+        progress.notify_all();
     }
 
     fn create_job_queue(session: &SessionInfo, sorted_modules: &[ModuleKey]) -> VecDeque<Job> {
@@ -229,7 +300,7 @@ impl PreParser {
                 let data_files: Vec<PathBuf> = module.data().iter()
                     .map(|(url, _)| module_path.join(url))
                     .collect();
-                Job { module_idx, module_path, data_files }
+                Job { module_idx, kind: JobKind::Module { module_path, data_files } }
             })
             .collect()
     }
@@ -237,8 +308,10 @@ impl PreParser {
 
 impl Drop for PreParser {
     fn drop(&mut self) {
-        // Empty the job queue so that workers end their loop.
+        // Empty the job queue so that workers end their loop, and release (then skip) the jobs
+        // they wait on.
         self.job_queue.lock().unwrap().clear();
+        self.notify_progress(usize::MAX);
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
@@ -248,8 +321,7 @@ impl Drop for PreParser {
 /// Process one module job: first read every file in its declared `data` list,
 /// then walk the module dir pre-parsing Python sources, then walk its `static/`
 /// asset folders.
-fn pre_parse_module(ctx: &WorkerCtx, job: Job) {
-    let Job { module_idx, module_path, data_files } = job;
+fn pre_parse_module(ctx: &WorkerCtx, module_idx: usize, module_path: PathBuf, data_files: Vec<PathBuf>) {
 
     // Pass 1: declared data files
     for path in &data_files {

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, path::Path, rc::Rc, sync::atomic::Ordering};
+use std::{cell::RefCell, path::{Path, PathBuf}, rc::Rc, sync::atomic::Ordering};
 
 use lsp_types::MessageType;
 use tracing::{error, info, trace};
@@ -84,6 +84,24 @@ impl BuildScheduler {
 
     pub fn validation_queue_len(session: &mut SessionInfo) -> usize {
         bs!(session).rebuild_validation.len()
+    }
+
+    /// The Python files waiting for validation, in queue order.
+    pub fn python_files_to_validate(session: &SessionInfo) -> Vec<(BuildableSymbolKey, PathBuf)> {
+        let symbol_table = &session.sync_odoo.symbol_table;
+        bs!(session).rebuild_validation.iter_valid(symbol_table)
+            .filter(Self::is_python_file)
+            .filter_map(|key| Some((key, PathBuf::from(symbol_table.file_path(key.as_source_file_key()?)))))
+            .collect()
+    }
+
+    /// The Python file the validation queue will validate next.
+    pub fn next_python_file_to_validate(session: &SessionInfo) -> Option<BuildableSymbolKey> {
+        bs!(session).rebuild_validation.iter_valid(&session.sync_odoo.symbol_table).find(Self::is_python_file)
+    }
+
+    fn is_python_file(key: &BuildableSymbolKey) -> bool {
+        matches!(key, BuildableSymbolKey::File(_) | BuildableSymbolKey::PythonPackage(_) | BuildableSymbolKey::Module(_))
     }
 
     fn pop_item(session: &mut SessionInfo, step: BuildSteps) -> Option<BuildableSymbolKey> {
