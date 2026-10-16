@@ -403,7 +403,8 @@ impl ReferenceFeature {
     fn indexed_python_references(session: &mut SessionInfo, target: SymbolKey) -> Option<Vec<Location>> {
         if !matches!(target, SymbolKey::Class(_) | SymbolKey::Function(_) | SymbolKey::Variable(_))
             || call_hierarchy::check_index(session).is_err()
-            || graph_recorder::target_class(session.st(), target) != graph_recorder::TargetClass::Indexed {
+            || graph_recorder::target_class(session.st(), target) != graph_recorder::TargetClass::Indexed
+            || graph_recorder::is_import_alias(session.st(), target) {
             return None;
         }
         let info = call_hierarchy::node_of_symbol(session, target)?;

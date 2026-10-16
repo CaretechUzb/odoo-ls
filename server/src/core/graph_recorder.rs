@@ -128,6 +128,13 @@ pub fn classify_target(typ: SymType, parent_typ: Option<SymType>, is_external: b
     }
 }
 
+/// Variables bound by an import statement. Uses of an import name resolve, for definition and
+/// references, to the imported symbol, so edges to the alias itself are not recorded (they
+/// were a sixth of all edges); references to an alias use the file scan.
+pub fn is_import_alias(st: &SymbolTable, sym: SymbolKey) -> bool {
+    matches!(sym, SymbolKey::Variable(v) if st[v].is_import_variable)
+}
+
 fn is_lambda(st: &SymbolTable, sym: SymbolKey) -> bool {
     matches!(sym, SymbolKey::Function(_)) && st.name(sym).as_str() == LAMBDA_NAME
 }
@@ -153,6 +160,13 @@ pub fn caller_of(st: &SymbolTable, scope: SymbolKey) -> Option<SymbolKey> {
 
 fn active(session: &SessionInfo) -> bool {
     session.sync_odoo.graph_recorder.is_some()
+}
+
+/// Whether anything can receive an edge right now: a unit is being validated, or a transient
+/// scan runs. Lets the evaluation hooks return before doing any work otherwise.
+fn recording(session: &SessionInfo, is_in_validation: bool) -> bool {
+    session.sync_odoo.graph_recorder.as_ref()
+        .is_some_and(|r| (is_in_validation && !r.stack.is_empty()) || r.transient.is_some())
 }
 
 /// Buffer that edges recorded in `parent` go to, if any.
@@ -183,7 +197,7 @@ fn model_and_name_of_method(st: &SymbolTable, f: SymbolKey) -> (Option<OYarn>, O
 /// MODEL_REF edge for string literals naming an Odoo model. Same matching as
 /// `record_evaluation_hit` in the legacy reference search.
 pub fn on_evals(session: &mut SessionInfo, parent: SymbolKey, range: TextRange, evals: &[Evaluation], is_in_validation: bool) {
-    if !active(session) || evals.is_empty() {
+    if evals.is_empty() || !recording(session, is_in_validation) {
         return;
     }
     let mut edges = vec![];
@@ -193,7 +207,8 @@ pub fn on_evals(session: &mut SessionInfo, parent: SymbolKey, range: TextRange, 
             let ptr = eval.symbol.get_symbol_ptr();
             if ptr.has_weak()
                 && let Some(dst) = ptr.get_weak().weak.upgrade(st)
-                && target_class(st, dst) == TargetClass::Indexed {
+                && target_class(st, dst) == TargetClass::Indexed
+                && !is_import_alias(st, dst) {
                     edges.push(PendingEdge {
                         src: dst, // replaced by the caller below
                         dst: Some(dst), kind: EDGE_REF,
@@ -228,7 +243,7 @@ pub fn on_evals(session: &mut SessionInfo, parent: SymbolKey, range: TextRange, 
 /// resolves to (after following references, so calls through imports are found), at the range
 /// of the callee expression.
 pub fn on_call(session: &mut SessionInfo, parent: SymbolKey, func: &Expr, callees: &[EvaluationSymbolPtr], is_in_validation: bool) {
-    if !active(session) || callees.is_empty() {
+    if callees.is_empty() || !recording(session, is_in_validation) {
         return;
     }
     let mut edges = vec![];
@@ -262,7 +277,7 @@ pub fn on_call(session: &mut SessionInfo, parent: SymbolKey, func: &Expr, callee
 /// Hook for import statements, which do not go through `analyze_ast`: one REF edge per symbol
 /// an alias resolves to, at the alias range (same lookup as the legacy `ReferenceVisitor`).
 pub fn on_import_alias(session: &mut SessionInfo, scope: SymbolKey, alias: &Alias, is_in_validation: bool) {
-    if !active(session) || alias.name.id == "*" {
+    if alias.name.id == "*" || !recording(session, is_in_validation) {
         return;
     }
     let Some(file_symbol) = session.st().get_file(scope) else { return };
@@ -425,8 +440,15 @@ fn write_unit(session: &mut SessionInfo, unit: SymbolKey, file: SourceFileKey, e
         let mut texts: HashMap<String, Option<String>> = HashMap::default();
         let Some(owner) = node_id(session, &mut graph, unit, &mut texts)? else { return Ok(()) };
         let from_file = graph.file_id(session.st().file_path(file))?;
+        // A CALL edge also stands for the REF edge of its callee expression (same site, same
+        // target): references read both kinds, so the REF row is not written.
+        let calls: HashSet<(SymbolKey, Option<SymbolKey>, u32, u32)> = edges.iter()
+            .filter(|e| e.kind == EDGE_CALL).map(|e| (e.src, e.dst, e.start, e.end)).collect();
         let mut rows = Vec::with_capacity(edges.len());
         for edge in edges {
+            if edge.kind == EDGE_REF && calls.contains(&(edge.src, edge.dst, edge.start, edge.end)) {
+                continue;
+            }
             let Some(src) = node_id(session, &mut graph, edge.src, &mut texts)? else { continue };
             let dst = match edge.dst {
                 Some(dst) => match node_id(session, &mut graph, dst, &mut texts)? {
@@ -508,6 +530,10 @@ pub fn on_init_done(session: &mut SessionInfo) {
     let (units, files_validated, files_arch_evaluated) = session.sync_odoo.graph_recorder.as_ref()
         .map(|r| (r.units_written, r.files_validated, r.files_arch_evaluated)).unwrap_or_default();
     let Some(graph) = session.sync_odoo.graph_index.as_mut() else { return };
+    if let Err(e) = graph.flush() {
+        disable(session, &e);
+        return;
+    }
     graph.ready = true;
     let size = std::fs::metadata(graph.db_path()).map(|m| m.len()).unwrap_or(0);
     match graph.counts() {

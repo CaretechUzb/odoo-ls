@@ -19,7 +19,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use tracing::{info, warn};
 
 use crate::core::symbols::symbol_keys::SymbolKey;
-use crate::utils::HashMap;
+use crate::utils::{HashMap, HashSet};
 
 pub const EDGE_CALL: i64 = 1;
 pub const EDGE_REF: i64 = 2;
@@ -41,6 +41,14 @@ pub const INDEXING_IN_PROGRESS: &str = "odoo-ls: indexing in progress";
 
 static INSTANCE_COUNTER: AtomicU32 = AtomicU32::new(0);
 
+/// `src`, `dst` and `owner` reference `nodes(id)` and `nodes.file` references `files(id)`.
+/// Foreign keys are not declared: enforcing them costs a parent lookup per inserted edge, so
+/// the deletes below remove dependent edges explicitly (the effect of ON DELETE CASCADE).
+/// Lookups by `src` use the UNIQUE index, whose first column is `src`; edges by file are
+/// reached through the nodes of the file, since `src` and `owner` are always in `from_file`.
+/// `owner` has no index of its own: validation edges are recorded with `src` = the validated
+/// unit (`owner`), and ARCH_EVAL edges have `src` = a class of the owner file, so both are
+/// found through `src`.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS files(
     id INTEGER PRIMARY KEY,
@@ -48,7 +56,7 @@ CREATE TABLE IF NOT EXISTS files(
 );
 CREATE TABLE IF NOT EXISTS nodes(
     id INTEGER PRIMARY KEY,
-    file INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    file INTEGER NOT NULL,
     qualname TEXT NOT NULL,
     occurrence INTEGER NOT NULL,
     name TEXT NOT NULL,
@@ -62,10 +70,10 @@ CREATE TABLE IF NOT EXISTS nodes(
     UNIQUE(file, qualname, occurrence)
 );
 CREATE TABLE IF NOT EXISTS edges(
-    src INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-    dst INTEGER REFERENCES nodes(id) ON DELETE CASCADE,
+    src INTEGER NOT NULL,
+    dst INTEGER,
     kind INTEGER NOT NULL,
-    owner INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    owner INTEGER NOT NULL,
     from_file INTEGER NOT NULL,
     start INTEGER NOT NULL,
     end INTEGER NOT NULL,
@@ -75,11 +83,8 @@ CREATE TABLE IF NOT EXISTS edges(
     UNIQUE(src, dst, kind, from_file, start)
 );
 CREATE INDEX IF NOT EXISTS edges_dst_kind ON edges(dst, kind);
-CREATE INDEX IF NOT EXISTS edges_owner_kind ON edges(owner, kind);
-CREATE INDEX IF NOT EXISTS edges_from_file ON edges(from_file);
-CREATE INDEX IF NOT EXISTS edges_src_kind ON edges(src, kind);
-CREATE INDEX IF NOT EXISTS edges_model_name_kind ON edges(dst_model, dst_name, kind);
-CREATE INDEX IF NOT EXISTS edges_model_parent_kind ON edges(dst_model_parent, kind);
+CREATE INDEX IF NOT EXISTS edges_model_name_kind ON edges(dst_model, dst_name, kind) WHERE dst_model IS NOT NULL;
+CREATE INDEX IF NOT EXISTS edges_model_parent_kind ON edges(dst_model_parent, kind) WHERE dst_model_parent IS NOT NULL;
 CREATE INDEX IF NOT EXISTS nodes_model ON nodes(model);
 CREATE INDEX IF NOT EXISTS nodes_file ON nodes(file);
 ";
@@ -139,7 +144,19 @@ pub struct GraphIndex {
     /// node ids per file id, per symbol. Dropped for a file whenever its nodes are rewritten.
     sym_cache: HashMap<i64, HashMap<SymbolKey, i64>>,
     generation: i64,
+    /// Writes go into one open transaction committed every `BATCH_WRITES` writes: a commit
+    /// per unit costs a page write per commit. Reads on this connection see uncommitted rows,
+    /// and the database is rebuilt at every start, so batching loses nothing.
+    in_batch: bool,
+    batched_writes: u32,
+    /// (owner, kind) pairs written this session; other owners have no edges to delete.
+    written_owners: HashSet<(i64, i64)>,
 }
+
+/// Edges per multi-row INSERT statement (10 parameters each, well under SQLite's limit).
+const EDGES_PER_INSERT: usize = 64;
+
+const BATCH_WRITES: u32 = 2000;
 
 fn sql_err(e: rusqlite::Error) -> String {
     e.to_string()
@@ -165,8 +182,9 @@ impl GraphIndex {
         let db_path = dir.join(file_name);
         remove_db_files(&db_path);
         let conn = Connection::open(&db_path).map_err(|e| format!("cannot open {}: {}", db_path.display(), e))?;
+        conn.set_prepared_statement_cache_capacity(EDGES_PER_INSERT + 32);
         conn.execute_batch(
-            "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-16000; PRAGMA foreign_keys=ON;"
+            "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-16000;"
         ).map_err(sql_err)?;
         conn.execute_batch(SCHEMA).map_err(sql_err)?;
         info!("Graph index opened at {}", db_path.display());
@@ -177,6 +195,9 @@ impl GraphIndex {
             file_ids: HashMap::default(),
             sym_cache: HashMap::default(),
             generation: 0,
+            in_batch: false,
+            batched_writes: 0,
+            written_owners: HashSet::default(),
         })
     }
 
@@ -188,11 +209,39 @@ impl GraphIndex {
         self.conn.as_ref().expect("graph index connection is open")
     }
 
+    fn begin_write(&mut self) -> Result<(), String> {
+        if !self.in_batch {
+            self.conn().execute_batch("BEGIN").map_err(sql_err)?;
+            self.in_batch = true;
+        }
+        Ok(())
+    }
+
+    fn end_write(&mut self) -> Result<(), String> {
+        self.batched_writes += 1;
+        if self.batched_writes >= BATCH_WRITES {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Commit the open write batch.
+    pub fn flush(&mut self) -> Result<(), String> {
+        if self.in_batch {
+            self.in_batch = false;
+            self.batched_writes = 0;
+            self.conn().execute_batch("COMMIT").map_err(sql_err)?;
+        }
+        Ok(())
+    }
+
     /// Drop every row. Used when the session (re)initializes.
     pub fn clear(&mut self) -> Result<(), String> {
+        self.flush()?;
         self.conn().execute_batch("DELETE FROM edges; DELETE FROM nodes; DELETE FROM files;").map_err(sql_err)?;
         self.file_ids.clear();
         self.sym_cache.clear();
+        self.written_owners.clear();
         self.ready = false;
         Ok(())
     }
@@ -201,6 +250,7 @@ impl GraphIndex {
         if let Some(&id) = self.file_ids.get(path) {
             return Ok(id);
         }
+        self.begin_write()?;
         let conn = self.conn.as_ref().expect("graph index connection is open");
         conn.prepare_cached("INSERT INTO files(path) VALUES (?1) ON CONFLICT(path) DO NOTHING").map_err(sql_err)?
             .execute(params![path]).map_err(sql_err)?;
@@ -229,24 +279,31 @@ impl GraphIndex {
     }
 
     fn upsert_node_row(conn: &Connection, file_id: i64, info: &NodeInfo, generation: i64) -> Result<i64, String> {
-        conn.prepare_cached(
-            "INSERT INTO nodes(file, qualname, occurrence, name, kind, model, r_start, r_end, s_start, s_end, gen)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-             ON CONFLICT(file, qualname, occurrence) DO UPDATE SET
-                name = excluded.name, kind = excluded.kind, model = excluded.model,
-                r_start = excluded.r_start, r_end = excluded.r_end,
-                s_start = excluded.s_start, s_end = excluded.s_end, gen = excluded.gen
-             RETURNING id"
-        ).map_err(sql_err)?
-        .query_row(params![
+        let values = params![
             file_id, info.qualname, info.occurrence, info.name, info.kind, info.model,
             info.range.0, info.range.1, info.selection.0, info.selection.1, generation
-        ], |r| r.get(0)).map_err(sql_err)
+        ];
+        // Insert first: during the initial build every node is new, and this avoids the
+        // cost of an upsert returning its row.
+        let inserted = conn.prepare_cached(
+            "INSERT OR IGNORE INTO nodes(file, qualname, occurrence, name, kind, model, r_start, r_end, s_start, s_end, gen)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
+        ).map_err(sql_err)?.execute(values).map_err(sql_err)?;
+        if inserted == 1 {
+            return Ok(conn.last_insert_rowid());
+        }
+        conn.prepare_cached(
+            "UPDATE nodes SET name = ?4, kind = ?5, model = ?6, r_start = ?7, r_end = ?8, s_start = ?9, s_end = ?10, gen = ?11
+             WHERE file = ?1 AND qualname = ?2 AND occurrence = ?3"
+        ).map_err(sql_err)?.execute(values).map_err(sql_err)?;
+        conn.prepare_cached("SELECT id FROM nodes WHERE file = ?1 AND qualname = ?2 AND occurrence = ?3").map_err(sql_err)?
+            .query_row(params![file_id, info.qualname, info.occurrence], |r| r.get(0)).map_err(sql_err)
     }
 
     /// Insert or update the node of `sym`, keeping its id if `(file, qualname, occurrence)` exists.
     pub fn upsert_node(&mut self, sym: SymbolKey, info: &NodeInfo) -> Result<i64, String> {
         let file_id = self.file_id(&info.path)?;
+        self.begin_write()?;
         let id = GraphIndex::upsert_node_row(self.conn(), file_id, info, self.generation)?;
         self.sym_cache.entry(file_id).or_default().insert(sym, id);
         Ok(id)
@@ -254,20 +311,25 @@ impl GraphIndex {
 
     /// Rewrite the nodes of the file at `path`: upsert every given node (ids of unchanged
     /// identities are kept, so edges pointing at them survive) and delete the nodes of that
-    /// file that are not in `nodes` (their edges go with them through ON DELETE CASCADE).
+    /// file that are not in `nodes`, with the edges from, to or owned by them.
     pub fn replace_file_nodes(&mut self, path: &str, nodes: &[(SymbolKey, NodeInfo)]) -> Result<Vec<i64>, String> {
         let file_id = self.file_id(path)?;
         self.generation += 1;
         let generation = self.generation;
+        self.begin_write()?;
         let conn = self.conn.as_ref().expect("graph index connection is open");
-        let tx = conn.unchecked_transaction().map_err(sql_err)?;
         let mut ids = Vec::with_capacity(nodes.len());
         for (_, info) in nodes.iter() {
-            ids.push(GraphIndex::upsert_node_row(&tx, file_id, info, generation)?);
+            ids.push(GraphIndex::upsert_node_row(conn, file_id, info, generation)?);
         }
-        tx.prepare_cached("DELETE FROM nodes WHERE file = ?1 AND gen <> ?2").map_err(sql_err)?
-            .execute(params![file_id, generation]).map_err(sql_err)?;
-        tx.commit().map_err(sql_err)?;
+        for sql in [
+            "DELETE FROM edges WHERE dst IN (SELECT id FROM nodes WHERE file = ?1 AND gen <> ?2)",
+            "DELETE FROM edges WHERE src IN (SELECT id FROM nodes WHERE file = ?1 AND gen <> ?2)",
+            "DELETE FROM nodes WHERE file = ?1 AND gen <> ?2",
+        ] {
+            conn.prepare_cached(sql).map_err(sql_err)?.execute(params![file_id, generation]).map_err(sql_err)?;
+        }
+        self.end_write()?;
         let cache = self.sym_cache.entry(file_id).or_default();
         cache.clear();
         for ((sym, _), id) in nodes.iter().zip(ids.iter()) {
@@ -278,22 +340,39 @@ impl GraphIndex {
 
     /// Replace the edges of kinds `kinds` owned by node `owner` with `edges`.
     pub fn replace_edges(&mut self, owner: i64, kinds: &[i64], edges: &[EdgeRow]) -> Result<(), String> {
-        let conn = self.conn();
-        let tx = conn.unchecked_transaction().map_err(sql_err)?;
-        {
-            let mut delete = tx.prepare_cached("DELETE FROM edges WHERE owner = ?1 AND kind = ?2").map_err(sql_err)?;
-            for kind in kinds {
-                delete.execute(params![owner, kind]).map_err(sql_err)?;
+        self.begin_write()?;
+        let conn = self.conn.as_ref().expect("graph index connection is open");
+        for kind in kinds {
+            // An owner that never wrote edges of this kind in this session has none.
+            if !self.written_owners.contains(&(owner, *kind)) {
+                continue;
             }
-            let mut insert = tx.prepare_cached(
-                "INSERT OR IGNORE INTO edges(src, dst, kind, owner, from_file, start, end, dst_model, dst_name, dst_model_parent)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
-            ).map_err(sql_err)?;
-            for e in edges {
-                insert.execute(params![e.src, e.dst, e.kind, owner, e.from_file, e.start, e.end, e.dst_model, e.dst_name, e.dst_model_parent]).map_err(sql_err)?;
-            }
+            let sql = if VALIDATION_KINDS.contains(kind) {
+                "DELETE FROM edges WHERE src = ?1 AND kind = ?2 AND owner = ?1"
+            } else {
+                "DELETE FROM edges WHERE kind = ?2 AND owner = ?1 AND src IN (SELECT id FROM nodes WHERE file = (SELECT file FROM nodes WHERE id = ?1))"
+            };
+            conn.prepare_cached(sql).map_err(sql_err)?.execute(params![owner, kind]).map_err(sql_err)?;
         }
-        tx.commit().map_err(sql_err)
+        for kind in kinds {
+            self.written_owners.insert((owner, *kind));
+        }
+        for chunk in edges.chunks(EDGES_PER_INSERT) {
+            let mut sql = String::from("INSERT OR IGNORE INTO edges(src, dst, kind, owner, from_file, start, end, dst_model, dst_name, dst_model_parent) VALUES ");
+            for i in 0..chunk.len() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                sql.push_str("(?,?,?,?,?,?,?,?,?,?)");
+            }
+            let mut insert = conn.prepare_cached(&sql).map_err(sql_err)?;
+            let mut values: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 10);
+            for e in chunk {
+                values.extend_from_slice(&[&e.src, &e.dst, &e.kind, &owner, &e.from_file, &e.start, &e.end, &e.dst_model, &e.dst_name, &e.dst_model_parent]);
+            }
+            insert.execute(values.as_slice()).map_err(sql_err)?;
+        }
+        self.end_write()
     }
 
     /// Remove every row of the file at `path` (source deleted or renamed on disk).
@@ -301,12 +380,17 @@ impl GraphIndex {
         let Some(file_id) = self.existing_file_id(path)? else {
             return Ok(());
         };
-        let conn = self.conn();
-        let tx = conn.unchecked_transaction().map_err(sql_err)?;
-        tx.prepare_cached("DELETE FROM edges WHERE from_file = ?1").map_err(sql_err)?.execute(params![file_id]).map_err(sql_err)?;
-        tx.prepare_cached("DELETE FROM nodes WHERE file = ?1").map_err(sql_err)?.execute(params![file_id]).map_err(sql_err)?;
+        self.begin_write()?;
+        let tx = self.conn();
+        for sql in [
+            "DELETE FROM edges WHERE dst IN (SELECT id FROM nodes WHERE file = ?1)",
+            "DELETE FROM edges WHERE src IN (SELECT id FROM nodes WHERE file = ?1)",
+            "DELETE FROM nodes WHERE file = ?1",
+        ] {
+            tx.prepare_cached(sql).map_err(sql_err)?.execute(params![file_id]).map_err(sql_err)?;
+        }
         tx.prepare_cached("DELETE FROM files WHERE id = ?1").map_err(sql_err)?.execute(params![file_id]).map_err(sql_err)?;
-        tx.commit().map_err(sql_err)?;
+        self.end_write()?;
         self.file_ids.remove(path);
         self.sym_cache.remove(&file_id);
         Ok(())
