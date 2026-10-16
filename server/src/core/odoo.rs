@@ -550,7 +550,7 @@ impl SyncOdoo {
         if DEBUG_SYMBOL_TABLE_METRICS {
             log_symbol_counts(session.st());
             log_slotmap_capacities(session.st());
-            log_memory_usage();
+            log_memory_usage("build_database end");
         }
     }
 
