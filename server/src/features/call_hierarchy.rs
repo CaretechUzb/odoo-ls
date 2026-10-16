@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::constants::SymType;
 use crate::core::file_mgr::{offset_to_position_with_line_index, FileInfo, FileMgr};
-use crate::core::graph_index::{EdgeSite, NodeInfo, NodeRow, EDGE_CALL, INDEXING_IN_PROGRESS, UNAVAILABLE_PREFIX};
+use crate::core::graph_index::{EdgeSite, NodeInfo, NodeRow, EDGE_CALL, FLAG_SUPER_OF_OVERRIDE, INDEXING_IN_PROGRESS, UNAVAILABLE_PREFIX};
 use crate::core::graph_recorder::{self, PendingEdge};
 use crate::core::symbols::symbol_keys::{SourceFileKey, SymbolKey};
 use crate::core::text_document::TextDocument;
@@ -233,7 +233,7 @@ impl CallHierarchyFeature {
                 }
             }
         }
-        for edge in dirty_edges.into_iter().filter(|e| e.kind == EDGE_CALL) {
+        for edge in dirty_edges.into_iter().filter(|e| e.kind == EDGE_CALL && (model_method.is_none() || e.flags & FLAG_SUPER_OF_OVERRIDE == 0)) {
             let matches = (target.is_some() && edge.dst == target)
                 || model_method.as_ref().is_some_and(|(m, n)| edge.dst_model.as_deref() == Some(m.as_str()) && edge.dst_name.as_deref() == Some(n.as_str()));
             if !matches {

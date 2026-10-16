@@ -81,7 +81,7 @@ fn test_type_hierarchy() {
 
     // Odoo models: _inherit extensions (same name) and inheriting models are subtypes
     let model = item(&mut session, &m1, 17, 8);
-    assert_eq!(subtypes(&mut session, &model), vec!["GraphMixinUser@module_2", "GraphModel@module_2"]);
+    assert_eq!(subtypes(&mut session, &model), vec!["GraphMixinUser@module_2", "GraphModel@module_2", "GraphModelSibling@module_2"]);
     // the main class of each _inherit parent is a supertype, next to the Python bases
     let extension = item(&mut session, &m2, 3, 8);
     assert_eq!(supertypes(&mut session, &extension), vec!["GraphModel@module_1", "Model@odoo"]);

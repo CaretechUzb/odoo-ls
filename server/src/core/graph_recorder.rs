@@ -20,7 +20,7 @@ use tracing::{error, info};
 
 use crate::constants::{BuildStatus, BuildSteps, OYarn, PackageType, SymType, LAMBDA_NAME};
 use crate::core::evaluation::{Evaluation, EvaluationSymbolPtr, EvaluationValue};
-use crate::core::graph_index::{EdgeRow, GraphIndex, NodeInfo, ARCH_EVAL_KINDS, EDGE_CALL, EDGE_INHERITS, EDGE_MODEL_INHERIT, EDGE_MODEL_REF, EDGE_REF, VALIDATION_KINDS};
+use crate::core::graph_index::{EdgeRow, GraphIndex, NodeInfo, ARCH_EVAL_KINDS, EDGE_CALL, EDGE_INHERITS, EDGE_MODEL_INHERIT, EDGE_MODEL_REF, EDGE_REF, FLAG_SUPER_OF_OVERRIDE, VALIDATION_KINDS};
 use crate::core::symbols::storage::symbol_mgr::SymbolMgr;
 use crate::core::symbols::storage::SymbolTable;
 use crate::core::symbols::symbol_keys::{SourceFileKey, SymbolKey};
@@ -38,6 +38,8 @@ pub struct PendingEdge {
     pub dst_model: Option<OYarn>,
     pub dst_name: Option<OYarn>,
     pub dst_model_parent: Option<OYarn>,
+    /// `FLAG_*` bits of `graph_index`.
+    pub flags: i64,
 }
 
 /// Deduplicating edge buffer. Nested and re-evaluated sub-expressions record the same edge
@@ -213,7 +215,7 @@ pub fn on_evals(session: &mut SessionInfo, parent: SymbolKey, range: TextRange, 
                         src: dst, // replaced by the caller below
                         dst: Some(dst), kind: EDGE_REF,
                         start: range.start().to_u32(), end: range.end().to_u32(),
-                        dst_model: None, dst_name: None, dst_model_parent: None,
+                        dst_model: None, dst_name: None, dst_model_parent: None, flags: 0,
                     });
                 }
             if let Some(EvaluationValue::CONSTANT(c)) = eval.value.as_ref()
@@ -223,7 +225,7 @@ pub fn on_evals(session: &mut SessionInfo, parent: SymbolKey, range: TextRange, 
                         src: parent,
                         dst: None, kind: EDGE_MODEL_REF,
                         start: constant.range.start().to_u32(), end: constant.range.end().to_u32(),
-                        dst_model: Some(crate::oyarn!("{}", constant.value.to_str())), dst_name: None, dst_model_parent: None,
+                        dst_model: Some(crate::oyarn!("{}", constant.value.to_str())), dst_name: None, dst_model_parent: None, flags: 0,
                     });
                 }
         }
@@ -239,9 +241,16 @@ pub fn on_evals(session: &mut SessionInfo, parent: SymbolKey, range: TextRange, 
     }
 }
 
+/// Whether `func` is `super(...).<name>`.
+fn is_super_attribute(func: &Expr) -> bool {
+    matches!(func, Expr::Attribute(attribute)
+        if matches!(attribute.value.as_ref(), Expr::Call(call) if matches!(call.func.as_ref(), Expr::Name(name) if name.id.as_str() == "super")))
+}
+
 /// Hook in the `Expr::Call` branch of `analyze_ast`: one CALL edge per function the callee
 /// resolves to (after following references, so calls through imports are found), at the range
-/// of the callee expression.
+/// of the callee expression. `super().name()` in a method `name` of an Odoo model, resolving to
+/// `name` on the same model, is flagged `FLAG_SUPER_OF_OVERRIDE`.
 pub fn on_call(session: &mut SessionInfo, parent: SymbolKey, func: &Expr, callees: &[EvaluationSymbolPtr], is_in_validation: bool) {
     if callees.is_empty() || !recording(session, is_in_validation) {
         return;
@@ -249,6 +258,11 @@ pub fn on_call(session: &mut SessionInfo, parent: SymbolKey, func: &Expr, callee
     let mut edges = vec![];
     {
         let st = &session.sync_odoo.symbol_table;
+        let override_of = if is_super_attribute(func) {
+            caller_of(st, parent).filter(|c| matches!(c, SymbolKey::Function(_))).map(|c| model_and_name_of_method(st, c))
+        } else {
+            None
+        };
         for callee in callees {
             let EvaluationSymbolPtr::WEAK(weak) = callee else { continue };
             let Some(dst) = weak.weak.upgrade(st) else { continue };
@@ -256,10 +270,14 @@ pub fn on_call(session: &mut SessionInfo, parent: SymbolKey, func: &Expr, callee
                 continue;
             }
             let (dst_model, dst_name) = model_and_name_of_method(st, dst);
+            let flags = match override_of.as_ref() {
+                Some((Some(model), Some(name))) if dst_model.as_ref() == Some(model) && dst_name.as_ref() == Some(name) => FLAG_SUPER_OF_OVERRIDE,
+                _ => 0,
+            };
             edges.push(PendingEdge {
                 src: parent, dst: Some(dst), kind: EDGE_CALL,
                 start: func.range().start().to_u32(), end: func.range().end().to_u32(),
-                dst_model, dst_name, dst_model_parent: None,
+                dst_model, dst_name, dst_model_parent: None, flags,
             });
         }
     }
@@ -302,7 +320,7 @@ pub fn on_import_alias(session: &mut SessionInfo, scope: SymbolKey, alias: &Alia
             buffer.push(PendingEdge {
                 src: caller, dst: Some(dst), kind: EDGE_REF,
                 start: alias.range.start().to_u32(), end: alias.range.end().to_u32(),
-                dst_model: None, dst_name: None, dst_model_parent: None,
+                dst_model: None, dst_name: None, dst_model_parent: None, flags: 0,
             });
         }
     }
@@ -391,13 +409,13 @@ fn write_file_nodes(session: &mut SessionInfo, file: SourceFileKey) -> Result<()
                 if let Some(base) = base.upgrade(st) {
                     let base: SymbolKey = base.into();
                     if target_class(st, base) == TargetClass::Indexed {
-                        pending.push(PendingEdge { src: *sym, dst: Some(base), kind: EDGE_INHERITS, start: site.0, end: site.1, dst_model: None, dst_name: None, dst_model_parent: None });
+                        pending.push(PendingEdge { src: *sym, dst: Some(base), kind: EDGE_INHERITS, start: site.0, end: site.1, dst_model: None, dst_name: None, dst_model_parent: None, flags: 0 });
                     }
                 }
             }
             if let Some(model) = st[class]._model.as_ref() {
                 for parent in model.inherit.iter().filter(|name| name.as_str() != "base") {
-                    pending.push(PendingEdge { src: *sym, dst: None, kind: EDGE_MODEL_INHERIT, start: site.0, end: site.1, dst_model: None, dst_name: None, dst_model_parent: Some(parent.clone()) });
+                    pending.push(PendingEdge { src: *sym, dst: None, kind: EDGE_MODEL_INHERIT, start: site.0, end: site.1, dst_model: None, dst_name: None, dst_model_parent: Some(parent.clone()), flags: 0 });
                 }
             }
         }
@@ -462,6 +480,7 @@ fn write_unit(session: &mut SessionInfo, unit: SymbolKey, file: SourceFileKey, e
                 dst_model: edge.dst_model.map(|m| m.to_string()),
                 dst_name: edge.dst_name.map(|m| m.to_string()),
                 dst_model_parent: edge.dst_model_parent.map(|m| m.to_string()),
+                flags: edge.flags,
             });
         }
         graph.replace_edges(owner, kinds, &rows)
@@ -786,7 +805,7 @@ mod tests {
 
     fn edge(start: u32) -> PendingEdge {
         let k = SymbolKey::File(Default::default());
-        PendingEdge { src: k, dst: Some(k), kind: EDGE_REF, start, end: start + 3, dst_model: None, dst_name: None, dst_model_parent: None }
+        PendingEdge { src: k, dst: Some(k), kind: EDGE_REF, start, end: start + 3, dst_model: None, dst_name: None, dst_model_parent: None, flags: 0 }
     }
 
     #[test]

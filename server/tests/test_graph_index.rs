@@ -36,7 +36,7 @@ fn sym(n: usize) -> SymbolKey {
 }
 
 fn edge(src: i64, dst: i64, kind: i64, from_file: i64, start: u32) -> EdgeRow {
-    EdgeRow { src, dst: Some(dst), kind, from_file, start, end: start + 3, dst_model: None, dst_name: None, dst_model_parent: None }
+    EdgeRow { src, dst: Some(dst), kind, from_file, start, end: start + 3, dst_model: None, dst_name: None, dst_model_parent: None, flags: 0 }
 }
 
 #[test]

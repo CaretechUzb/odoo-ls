@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS edges(
     dst_model TEXT,
     dst_name TEXT,
     dst_model_parent TEXT,
+    flags INTEGER NOT NULL DEFAULT 0,
     UNIQUE(src, dst, kind, from_file, start)
 );
 CREATE INDEX IF NOT EXISTS edges_dst_kind ON edges(dst, kind);
@@ -88,6 +89,10 @@ CREATE INDEX IF NOT EXISTS edges_model_parent_kind ON edges(dst_model_parent, ki
 CREATE INDEX IF NOT EXISTS nodes_model ON nodes(model);
 CREATE INDEX IF NOT EXISTS nodes_file ON nodes(file);
 ";
+
+/// `flags` bit of a CALL edge for `super().name()` inside a method `name` of the same Odoo
+/// model as the callee: the override extending the method, not a caller of it.
+pub const FLAG_SUPER_OF_OVERRIDE: i64 = 1;
 
 /// What a node row stores about a symbol. Ranges are byte offsets into the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +128,8 @@ pub struct EdgeRow {
     pub dst_model: Option<String>,
     pub dst_name: Option<String>,
     pub dst_model_parent: Option<String>,
+    /// `FLAG_*` bits.
+    pub flags: i64,
 }
 
 /// A use site read back from the database.
@@ -153,7 +160,7 @@ pub struct GraphIndex {
     written_owners: HashSet<(i64, i64)>,
 }
 
-/// Edges per multi-row INSERT statement (10 parameters each, well under SQLite's limit).
+/// Edges per multi-row INSERT statement (11 parameters each, well under SQLite's limit).
 const EDGES_PER_INSERT: usize = 64;
 
 const BATCH_WRITES: u32 = 2000;
@@ -358,17 +365,17 @@ impl GraphIndex {
             self.written_owners.insert((owner, *kind));
         }
         for chunk in edges.chunks(EDGES_PER_INSERT) {
-            let mut sql = String::from("INSERT OR IGNORE INTO edges(src, dst, kind, owner, from_file, start, end, dst_model, dst_name, dst_model_parent) VALUES ");
+            let mut sql = String::from("INSERT OR IGNORE INTO edges(src, dst, kind, owner, from_file, start, end, dst_model, dst_name, dst_model_parent, flags) VALUES ");
             for i in 0..chunk.len() {
                 if i > 0 {
                     sql.push(',');
                 }
-                sql.push_str("(?,?,?,?,?,?,?,?,?,?)");
+                sql.push_str("(?,?,?,?,?,?,?,?,?,?,?)");
             }
             let mut insert = conn.prepare_cached(&sql).map_err(sql_err)?;
-            let mut values: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 10);
+            let mut values: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 11);
             for e in chunk {
-                values.extend_from_slice(&[&e.src, &e.dst, &e.kind, &owner, &e.from_file, &e.start, &e.end, &e.dst_model, &e.dst_name, &e.dst_model_parent]);
+                values.extend_from_slice(&[&e.src, &e.dst, &e.kind, &owner, &e.from_file, &e.start, &e.end, &e.dst_model, &e.dst_name, &e.dst_model_parent, &e.flags]);
             }
             insert.execute(values.as_slice()).map_err(sql_err)?;
         }
@@ -436,7 +443,8 @@ impl GraphIndex {
     }
 
     /// Callers of `target`: CALL edges whose `dst` is the target, plus, when `model_method` is
-    /// given, CALL edges to any method with that name on that Odoo model (overrides, `super()`).
+    /// given, CALL edges to any method with that name on that Odoo model. For a model method,
+    /// the `super().name()` calls of its overrides (`FLAG_SUPER_OF_OVERRIDE`) are not callers.
     /// Returns (caller node, use site) rows.
     pub fn incoming_calls(&self, target: i64, model_method: Option<(&str, &str)>) -> Result<Vec<(NodeRow, EdgeSite)>, String> {
         let base = format!(
@@ -450,10 +458,10 @@ impl GraphIndex {
         match model_method {
             Some((model, name)) => {
                 let sql = format!(
-                    "{base} WHERE e.kind = ?1 AND e.dst = ?2 UNION ALL {base} WHERE e.kind = ?1 AND e.dst_model = ?3 AND e.dst_name = ?4 AND (e.dst IS NULL OR e.dst <> ?2)"
+                    "{base} WHERE e.kind = ?1 AND e.dst = ?2 AND (e.flags & ?5) = 0 UNION ALL {base} WHERE e.kind = ?1 AND e.dst_model = ?3 AND e.dst_name = ?4 AND (e.dst IS NULL OR e.dst <> ?2) AND (e.flags & ?5) = 0"
                 );
                 let mut stmt = self.conn().prepare_cached(&sql).map_err(sql_err)?;
-                let rows = stmt.query_map(params![EDGE_CALL, target, model, name], read).map_err(sql_err)?;
+                let rows = stmt.query_map(params![EDGE_CALL, target, model, name, FLAG_SUPER_OF_OVERRIDE], read).map_err(sql_err)?;
                 for row in rows { result.push(row.map_err(sql_err)?); }
             },
             None => {

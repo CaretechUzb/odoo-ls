@@ -83,19 +83,28 @@ fn test_call_hierarchy() {
     let base_method = item(&mut session, &m1, 8, 9);
     assert_eq!(incoming(&mut session, &base_method), vec!["child_method@module_1:13x1"]);
 
-    // Odoo method: plain self calls, env['model'].method() and super() from the override
+    // Odoo method: plain self calls and env['model'].method(). The super() calls of the
+    // overrides in module_2 extend the method and are not callers; the env call inside the
+    // sibling override is one (a single site: its super() call is left out).
     let expected = vec![
-        "action_done@module_2:6x1",
+        "action_done@module_2:27x1",
         "action_feedback@module_1:26x1",
         "action_feedback_schedule_next@module_1:30x1",
         "call_through_env@module_1:46x1",
     ];
     let action_done = item(&mut session, &m1, 23, 9);
     assert_eq!(incoming(&mut session, &action_done), expected);
-    // the override in module_2 sees the callers in module_1, which does not depend on it
+    // the override in module_2 sees the callers in module_1, which does not depend on it, and
+    // neither its own super() call nor the sibling override's
     let override_done = item(&mut session, &m2, 6, 9);
     assert_ne!(override_done.data, action_done.data);
     assert_eq!(incoming(&mut session, &override_done), expected);
+    let sibling_done = item(&mut session, &m2, 27, 9);
+    assert_eq!(incoming(&mut session, &sibling_done), expected);
+    // the super() call is still an outgoing call of the override (to each method it resolves to)
+    let mut super_callees = outgoing(&mut session, &override_done);
+    super_callees.dedup();
+    assert_eq!(super_callees, vec!["action_done:7"]);
 
     // outgoing calls
     let feedback = item(&mut session, &m1, 26, 9);
