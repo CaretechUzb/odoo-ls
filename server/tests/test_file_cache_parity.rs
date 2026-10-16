@@ -82,6 +82,31 @@ fn test_features_on_dropped_ast_match_file_cache() {
     }
 }
 
+/// Reloading unchanged files from disk gives their dropped ASTs back, but only a bounded number
+/// of them stays in memory.
+#[test]
+fn test_reloaded_asts_are_bounded() {
+    let (mut odoo, mut config) = setup::setup::setup_server(true);
+    config.set_bool(ConfigKey::FileCache, false);
+    let mut session = setup::setup::create_init_session(&mut odoo, config);
+    let file_mgr = session.sync_odoo.get_file_mgr();
+    let built_python_asts = |file_mgr: &FileMgr| file_mgr.files.values()
+        .filter(|f| f.borrow().uri.ends_with(".py") && !f.borrow().opened && f.borrow().file_info_ast.borrow().ast.is_built())
+        .count();
+    let dropped: Vec<String> = file_mgr.borrow().files.values()
+        .filter(|f| f.borrow().uri.ends_with(".py") && !f.borrow().file_info_ast.borrow().ast.is_built())
+        .map(|f| f.borrow().uri.clone())
+        .take(100)
+        .collect();
+    assert_eq!(dropped.len(), 100, "expected at least 100 files with a dropped AST");
+    let built_before = built_python_asts(&file_mgr.borrow());
+    for path in &dropped {
+        let (updated, _) = file_mgr.borrow_mut().update_file_info(&mut session, path, None, Some(-100), false);
+        assert!(!updated);
+    }
+    assert!(built_python_asts(&file_mgr.borrow()) <= built_before + 64, "reloaded ASTs must stay bounded");
+}
+
 /// Opening a file whose AST was dropped, with unchanged content, gives it its AST back.
 #[test]
 fn test_open_file_with_dropped_ast() {

@@ -468,6 +468,12 @@ impl LineTable {
         }
     }
 
+    /// Offset of a position, counting columns in bytes: only for a file that can no longer be read.
+    fn approximate_offset(&self, line: u32, character: u32) -> usize {
+        let line_start = self.index.line_starts().get(line as usize).copied().unwrap_or(self.text_len);
+        (line_start + TextSize::new(character)).min(self.text_len).to_usize()
+    }
+
     /// Read `path` from disk, for the conversions the table alone cannot do.
     fn with_disk_text<R>(path: &str, f: impl FnOnce(&TextDocument) -> R) -> Option<R> {
         let contents = fs::read_to_string(path).ok()?;
@@ -810,11 +816,13 @@ impl FileInfo {
         }
     }
 
-    /// Re-acquire the AST of `file_info` if it was dropped, see [`Self::prepare_ast`].
-    pub fn ensure_ast(file_info: &Rc<RefCell<FileInfo>>, session: &mut SessionInfo) {
+    /// Re-acquire the AST of `file_info` if it was dropped, see [`Self::prepare_ast`]. Returns
+    /// false if there is still no AST, e.g. the file was deleted from disk since.
+    pub fn ensure_ast(file_info: &Rc<RefCell<FileInfo>>, session: &mut SessionInfo) -> bool {
         if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
             file_info.borrow_mut().prepare_ast(session);
         }
+        file_info.borrow().file_info_ast.borrow().ast.is_built()
     }
 
     /// Scan a parsed module's comment tokens for `noqa` directives and (in test mode)
@@ -1099,10 +1107,10 @@ impl FileInfo {
 
     pub fn position_to_offset(&self, line: u32, char: u32, encoding: PositionEncoding) -> usize {
         let fia = self.file_info_ast.borrow();
-        if fia.dropped_line_table().is_some()
-            && let Some(offset) = LineTable::with_disk_text(&self.uri, |td| FileInfo::position_to_offset_with_text_document(td, line, char, encoding)) {
-                return offset;
-            }
+        if let Some(line_table) = fia.dropped_line_table() {
+            return LineTable::with_disk_text(&self.uri, |td| FileInfo::position_to_offset_with_text_document(td, line, char, encoding))
+                .unwrap_or_else(|| line_table.approximate_offset(line, char));
+        }
         FileInfo::position_to_offset_with_text_document(fia.text_document.as_ref().expect("no text_document provided"), line, char, encoding)
     }
 
@@ -1309,8 +1317,14 @@ impl FileMgr {
             let ep_mgr = session.sync_odoo.entry_point_mgr.borrow();
             let is_part_of_ep = ep_mgr.iter_all_but_public().any(|entry| uri.starts_with(&entry.borrow().path));
             drop(ep_mgr);
+            let was_built = file_info_mut.file_info_ast.borrow().ast.is_built();
             updated = file_info_mut.update(session, uri, content, version, !is_part_of_ep, force, is_untitled);
-            drop(file_info_mut);
+            // Unchanged content gave a dropped AST back (see `FileInfo::update`): bound it like a re-parse.
+            if !updated && !was_built && !file_info_mut.opened && !session.sync_odoo.config.file_cache()
+                && file_info_mut.file_info_ast.borrow().ast.is_built() {
+                    drop(file_info_mut);
+                    self.keep_reparsed_ast(uri);
+                }
         }
         (updated, return_info)
     }

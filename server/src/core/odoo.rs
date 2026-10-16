@@ -2090,6 +2090,10 @@ impl Odoo {
             file_info.opened = false;
             file_info.version = None;
         }
+        if !session.sync_odoo.config.file_cache() {
+            // No longer opened: its AST may now be dropped, like the ASTs parsed again on demand.
+            session.sync_odoo.get_file_mgr().borrow().keep_reparsed_ast(&path);
+        }
         session.sync_odoo.entry_point_mgr.borrow_mut().remove_entries_with_path(&mut session.sync_odoo.symbol_table, &Path::new(&path).to_tree_path().sanitize_cow());
         let path_exists = !FileMgr::is_untitled(&path) && Path::new(&path).exists();
         if !path_exists {

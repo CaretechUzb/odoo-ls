@@ -158,7 +158,9 @@ impl GotoUtils {
         line: u32,
         character: u32
     ) -> Vec<GotoSource> {
-        FileInfo::ensure_ast(file_info, session);
+        if !FileInfo::ensure_ast(file_info, session) {
+            return vec![];
+        }
         let offset = file_info.borrow().position_to_offset(line, character, session.sync_odoo.encoding);
         let file_info_ast_clone = file_info.borrow().file_info_ast.clone();
         let file_info_ast_ref = file_info_ast_clone.borrow();
