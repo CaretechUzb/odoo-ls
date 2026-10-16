@@ -1,4 +1,4 @@
-use tracing::debug;
+use tracing::{debug, info};
 use crate::core::symbols::SymbolTable;
 
 macro_rules! log_symbol_table {
@@ -17,14 +17,35 @@ pub fn log_slotmap_capacities(symbol_table: &SymbolTable) {
     log_symbol_table!(symbol_table, capacity; roots, disk_dirs, namespaces, python_packages, modules, files, compiled, classes, functions, variables, xml_files, csv_files);
 }
 
-pub fn log_memory_usage() {
-    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-        debug!("===Memory usage===");
-        for line in status.lines() {
-            if line.starts_with("VmRSS:") || line.starts_with("VmPeak:") || line.starts_with("VmHWM:") {
-                debug!("{}", line);
-            }
-        }
+/// Logs jemalloc allocated/resident bytes (info level). No-op where jemalloc is not the allocator.
+#[cfg(all(not(debug_assertions), any(target_os = "linux", target_os = "macos")))]
+pub fn log_memory_usage(label: &str) {
+    use tikv_jemalloc_ctl::{epoch, stats};
+    if epoch::advance().is_err() {
+        return;
+    }
+    if let (Ok(allocated), Ok(resident)) = (stats::allocated::read(), stats::resident::read()) {
+        info!("[mem] {}: allocated={:.1} MiB resident={:.1} MiB", label, allocated as f64 / 1048576.0, resident as f64 / 1048576.0);
+    }
+}
+
+#[cfg(not(all(not(debug_assertions), any(target_os = "linux", target_os = "macos"))))]
+pub fn log_memory_usage(_label: &str) {}
+
+/// Logs memory + symbol counts once per initial-build phase (ARCH, ARCH_EVAL, VALIDATION queues drained).
+#[derive(Default)]
+pub struct PhaseMemoryLogger { arch: bool, eval: bool }
+
+impl PhaseMemoryLogger {
+    pub fn check(&mut self, st: &SymbolTable, arch_empty: bool, eval_empty: bool, val_empty: bool) {
+        if arch_empty && !self.arch { self.arch = true; self.log(st, "ARCH drained"); }
+        if arch_empty && eval_empty && !self.eval { self.eval = true; self.log(st, "ARCH_EVAL drained"); }
+        if arch_empty && eval_empty && val_empty { self.log(st, "VALIDATION drained"); }
+    }
+    fn log(&self, st: &SymbolTable, label: &str) {
+        log_memory_usage(label);
+        info!("[mem] {} symbol counts: roots={} namespaces={} packages={} modules={} files={} classes={} functions={} variables={} xml={} csv={}", label,
+            st.roots.len(), st.namespaces.len(), st.python_packages.len(), st.modules.len(), st.files.len(), st.classes.len(), st.functions.len(), st.variables.len(), st.xml_files.len(), st.csv_files.len());
     }
 }
 

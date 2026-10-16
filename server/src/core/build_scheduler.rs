@@ -187,10 +187,12 @@ impl BuildScheduler {
         let mut reporter = (!bs!(session).rebuild_arch.is_empty() || !bs!(session).rebuild_arch_eval.is_empty() || !bs!(session).rebuild_validation.is_empty())
             .then(|| ProgressReporterRemaining::start(session, "Odoo: Indexing"));
         trace!("Starting rebuild: {:?} - {:?} - {:?}", bs!(session).rebuild_arch.len(), bs!(session).rebuild_arch_eval.len(), bs!(session).rebuild_validation.len());
+        let mut phase_mem = crate::core::symbols::storage::metrics::PhaseMemoryLogger::default();
         while !session.sync_odoo.need_rebuild && (!bs!(session).rebuild_arch.is_empty() || !bs!(session).rebuild_arch_eval.is_empty() || !bs!(session).rebuild_validation.is_empty()) {
             if DEBUG_THREADS {
                 trace!("remains: {:?} - {:?} - {:?}", bs!(session).rebuild_arch.len(), bs!(session).rebuild_arch_eval.len(), bs!(session).rebuild_validation.len());
             }
+            phase_mem.check(session.st(), bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
             let queue_size = bs!(session).rebuild_arch.len() * 3 + bs!(session).rebuild_arch_eval.len() * 2 + bs!(session).rebuild_validation.len();
             if let Some(reporter) = &mut reporter {
                 reporter.report_progress(queue_size);
@@ -264,6 +266,7 @@ impl BuildScheduler {
             info!("Odoo version change detected. OdooLS is restarting");
             session.send_notification(OdooNotification::RestartNeeded, ());
         }
+        phase_mem.check(session.st(), bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
         session.sync_odoo.import_cache = None;
         session.sync_odoo.watched_file_updates = 0;
         if let Some(reporter) = &mut reporter {
