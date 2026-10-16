@@ -3,7 +3,7 @@ use std::{cell::RefCell, path::Path, rc::Rc, sync::atomic::Ordering};
 use lsp_types::MessageType;
 use tracing::{error, info, trace};
 
-use crate::{S, constants::{BuildStatus, BuildSteps, DEBUG_REBUILD_NOW, DEBUG_STEPS, DEBUG_THREADS, MAX_WATCHED_FILES_UPDATES_BEFORE_RESTART}, core::{csv_validation::CsvValidator, entry_point::EntryPoint, import_resolver::ImportCache, js_validator::JsValidator, odoo::{InitState, OdooNotification}, python_arch_builder::PythonArchBuilder, python_arch_eval::PythonArchEval, python_validator::PythonValidator, symbols::{SymbolTable, symbol_keys::{BuildableSymbolKey, SymbolKey}, symbol_table_impl::CreateError}, xml_validation::XmlValidator}, fifo_ptr_weak_hash_set::FifoWeakHashSet, progress_reporter::ProgressReporterRemaining, threads::SessionInfo, tree::Tree, utils::HashSet};
+use crate::{S, constants::{BuildStatus, BuildSteps, DEBUG_REBUILD_NOW, DEBUG_STEPS, DEBUG_THREADS, MAX_WATCHED_FILES_UPDATES_BEFORE_RESTART}, core::{csv_validation::CsvValidator, graph_recorder, entry_point::EntryPoint, import_resolver::ImportCache, js_validator::JsValidator, odoo::{InitState, OdooNotification}, python_arch_builder::PythonArchBuilder, python_arch_eval::PythonArchEval, python_validator::PythonValidator, symbols::{SymbolTable, symbol_keys::{BuildableSymbolKey, SymbolKey}, symbol_table_impl::CreateError}, xml_validation::XmlValidator}, fifo_ptr_weak_hash_set::FifoWeakHashSet, progress_reporter::ProgressReporterRemaining, threads::SessionInfo, tree::Tree, utils::HashSet};
 
 #[derive(Debug)]
 pub struct BuildScheduler {
@@ -290,7 +290,9 @@ impl BuildScheduler {
             _ => {
                 if let Some(python_buildable) = sym_key.as_python_buildable() {
                     let mut validator = PythonValidator::new(session.st(), entry, python_buildable);
+                    graph_recorder::begin_unit(session, sym_key);
                     validator.validate(session);
+                    graph_recorder::end_unit(session, sym_key);
                 }
             }
         }
@@ -331,7 +333,9 @@ impl BuildScheduler {
                     };
                 } else if step == BuildSteps::VALIDATION {
                     let mut validator = PythonValidator::new(session.st(), entry_point, python_buildable);
+                    graph_recorder::begin_unit(session, symbol.into());
                     validator.validate(session);
+                    graph_recorder::end_unit(session, symbol.into());
                 }
             }
         } else if DEBUG_REBUILD_NOW {

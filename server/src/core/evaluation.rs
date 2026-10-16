@@ -2,6 +2,7 @@ use crate::core::build_scheduler::BuildScheduler;
 use crate::core::diagnostics::{create_diagnostic, DiagnosticCode};
 use crate::core::evaluation_context::{Context, ContextKey, ContextValue};
 use crate::core::evaluation_utils::DeepFieldEvalWalker;
+use crate::core::graph_recorder;
 use crate::core::odoo::SyncOdoo;
 use crate::core::python_odoo_builder::ACCESS_OPERATOR_OPTIONS;
 use crate::core::symbols::storage::xml::xml_field_symbol::XmlFieldName;
@@ -832,6 +833,7 @@ impl Evaluation {
                     let base_sym_weak_eval_base = base_eval.symbol.get_symbol(session, Some(context), &mut diagnostics, None);
                     SymbolTable::follow_ref(&base_sym_weak_eval_base, session, Some(context), true, false, None, None)
                 }).collect();
+                graph_recorder::on_call(session, parent, &expr.func, &base_eval_ptrs, is_in_validation);
 
                 let mut call_argument_diagnostics = Vec::new();
                 for base_eval_ptr in base_eval_ptrs.iter() {
@@ -1538,6 +1540,7 @@ impl Evaluation {
             ExprOrIdent::Expr(Expr::Starred(_starred_expr)) => {},
             ExprOrIdent::Expr(Expr::IpyEscapeCommand(_ipy_escape_command_expr)) =>{},
         }
+        graph_recorder::on_evals(session, parent, ast.range(), &evals, is_in_validation);
         let evaluation_search = session.sync_odoo.evaluation_search.clone();
         if let Some(evaluation_search) = evaluation_search.as_ref() {
             for eval in evals.iter() {

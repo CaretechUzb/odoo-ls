@@ -1,5 +1,6 @@
 use crate::core::build_scheduler::BuildScheduler;
 use crate::core::evaluation_utils::DeepFieldEvalWalker;
+use crate::core::graph_recorder;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::vec;
@@ -128,6 +129,7 @@ impl PythonArchEval {
             PythonArchEvalHooks::on_function_eval(session, &self.entry_point, f);
         }
         session.st_mut().set_build_status(self.sym_stack[0].unwrap_buildable_key(), BuildSteps::ARCH_EVAL, BuildStatus::DONE);
+        if self.file_mode && !session.st().is_external(self.sym_stack[0]) { graph_recorder::on_file_arch_eval(session, self.file); }
         if session.st().is_external(self.sym_stack[0]) && (!self.file_mode  || !file_info_rc.borrow().opened) {
             if self.file_mode {
                 let file_path = session.st().file_path(self.file).to_string();

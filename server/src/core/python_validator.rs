@@ -22,6 +22,7 @@ use super::evaluation::{Evaluation, EvaluationSymbolPtr, EvaluationSymbolWeak, E
 use super::file_mgr::{FileInfo, FileMgr};
 use super::import_resolver::manual_import;
 use super::python_arch_eval::PythonArchEval;
+use super::graph_recorder;
 
 #[derive(Debug)]
 pub struct PythonValidator {
@@ -202,7 +203,9 @@ impl PythonValidator {
                         if session.st().ready_for_step(sym.unwrap_buildable_key(), BuildSteps::VALIDATION) {
                             if let Some(python_buildable) = sym.as_python_buildable() {
                                 let mut v = PythonValidator::new(session.st(), self.entry_point.clone(), python_buildable);
+                                graph_recorder::begin_unit(session, sym);
                                 v.validate(session);
+                                graph_recorder::end_unit(session, sym);
                             }
                         } else if session.st().build_status(sym.unwrap_buildable_key(), BuildSteps::VALIDATION) == BuildStatus::IN_PROGRESS {
                             panic!("cyclic validation detected... Aborting");
@@ -307,6 +310,7 @@ impl PythonValidator {
             if alias.name.id == "*" {
                 continue;
             }
+            graph_recorder::on_import_alias(session, *self.sym_stack.last().unwrap(), alias, true);
             let Some(current_module) = self.current_module else {
                 continue;
             };
@@ -362,12 +366,14 @@ impl PythonValidator {
     }
 
     fn visit_ann_assign(&mut self, session: &mut SessionInfo, assign: &StmtAnnAssign) {
+        graph_recorder::on_assign_targets(session, *self.sym_stack.last().unwrap(), std::slice::from_ref(&assign.target), &assign.range.start());
         if let Some(value) = assign.value.as_ref() {
             self.validate_expr(session, value, &assign.range.start());
         }
     }
 
     fn visit_assign(&mut self, session: &mut SessionInfo, assign: &StmtAssign) {
+        graph_recorder::on_assign_targets(session, *self.sym_stack.last().unwrap(), &assign.targets, &assign.range.start());
         self.validate_expr(session, &assign.value, &assign.range.start());
     }
 

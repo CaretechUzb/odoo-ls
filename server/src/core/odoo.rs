@@ -4,6 +4,8 @@ use crate::core::component_mgr::ComponentMgr;
 use crate::core::diagnostics::{create_diagnostic, DiagnosticCode};
 use crate::core::entry_point::EntryPointType;
 use crate::core::file_mgr::{AstKind, PreloadedFile};
+use crate::core::graph_index::GraphIndex;
+use crate::core::graph_recorder::{self, GraphRecorder};
 use crate::core::js_module_scope;
 use crate::core::module_load_order::sort_by_load_order;
 use crate::core::pre_parser::{PreParseCache, PreParser};
@@ -197,6 +199,10 @@ pub struct SyncOdoo {
     pub symbol_table: SymbolTable,
     pub evaluation_search: Option<ReferenceTarget>, //If set, any evaluation will be check against this value. If evaluation matches, location is kept in evaluation_locations
     pub evaluation_locations: Vec<Location>,
+    pub graph_index: Option<GraphIndex>, // SQLite graph of symbols and uses, see graph_recorder
+    pub graph_recorder: Option<GraphRecorder>,
+    pub graph_unavailable: Option<String>, // why the graph index is off for this session
+    pub graph_dir: Option<PathBuf>, // overrides the graph index directory (tests)
     pub typeshed_weak_cache: TypeshedWeakReferences, //cache of weak references to important typeshed symbols, to avoid having to look for them in the graph for each evaluation
     pub deferred_subfunc_invalidation: Option<FifoWeakHashSet<SourceFileKey>>, // None = eager (default)
     languages_by_source: WeakMap<SourceFileKey, HashSet<String>>,
@@ -258,6 +264,10 @@ impl SyncOdoo {
             symbol_table: SymbolTable::new(),
             evaluation_search: None,
             evaluation_locations: vec![],
+            graph_index: None,
+            graph_recorder: None,
+            graph_unavailable: None,
+            graph_dir: None,
             typeshed_weak_cache: TypeshedWeakReferences::new(),
             languages_by_source: WeakMap::new(),
             language_dependents: WeakSet::new(),
@@ -326,6 +336,7 @@ impl SyncOdoo {
         crate::constants::install_debug_ptr(&session.sync_odoo.symbol_table);
 
         session.sync_odoo.symbol_table.pre_allocate();
+        graph_recorder::on_init(session);
         info!("Initializing odoo");
         info!("Full Config: {:?}", config);
         let start_time = Instant::now();
@@ -432,6 +443,7 @@ impl SyncOdoo {
             session.sync_odoo.state_init = InitState::PYTHON_READY;
             SyncOdoo::build_database(session);
         }
+        graph_recorder::on_init_done(session);
         if let Some(handle) = tsserver_handle {
             match handle.join() {
                 Ok(Some(bridge)) => session.sync_odoo.tsserver_bridge = Some(bridge),
@@ -2175,6 +2187,7 @@ impl Odoo {
             //1 - delete old uri
             session.sync_odoo.opened_files.retain(|x| x != &old_path.clone());
             SyncOdoo::unload_path(session, Path::new(&old_path));
+            graph_recorder::on_path_removed(session, &Path::new(&old_path).sanitize());
             FileMgr::delete_path(session, &old_path);
             session.sync_odoo.entry_point_mgr.borrow_mut().remove_entries_with_path(&mut session.sync_odoo.symbol_table, &old_path);
             BuildScheduler::process_rebuilds(session, false);
@@ -2210,6 +2223,7 @@ impl Odoo {
             let is_open_file = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path).is_some_and(|fi| fi.borrow().opened);
             if !is_open_file {
                 SyncOdoo::unload_path(session, Path::new(&path));
+                graph_recorder::on_path_removed(session, &Path::new(&path).sanitize());
                 FileMgr::delete_path(session, &path);
                 session.sync_odoo.entry_point_mgr.borrow_mut().remove_entries_with_path(&mut session.sync_odoo.symbol_table, &Path::new(&path).to_tree_path().sanitize_cow());
             }
