@@ -176,3 +176,156 @@ fn get_references(session: &mut SessionInfo, path: &str, position: Position)-> V
     assert!(references.is_some(), "Expected Some result from handle_references, got None for {}:{}-{}", path, position.line, position.character);
     references.unwrap()
 }
+
+fn references_opt(session: &mut SessionInfo, path: &str, position: Position) -> Vec<(String, u32, u32, u32, u32)> {
+    let params = lsp_types::ReferenceParams {
+        text_document_position: lsp_types::TextDocumentPositionParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: FileMgr::pathname2uri(path) },
+            position,
+        },
+        context: lsp_types::ReferenceContext { include_declaration: true },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+    let mut result: Vec<_> = odoo_ls_server::core::odoo::Odoo::handle_references(session, params)
+        .expect("no error")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|l| (l.uri.to_string(), l.range.start.line, l.range.start.character, l.range.end.line, l.range.end.character))
+        .collect();
+    result.sort();
+    result.dedup();
+    result
+}
+
+fn python_files(dir: &Path, result: &mut Vec<String>) {
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            python_files(&path, result);
+        } else if path.extension().is_some_and(|e| e == "py") {
+            result.push(path.sanitize());
+        }
+    }
+}
+
+/// Every class, function and module/class-level variable (fields and imported names
+/// included) of module_1 and module_2: references from the graph index contain every location
+/// of the legacy file scan. The index may only add locations in files the legacy scan did not
+/// visit: it only scans the current file and the registered dependents of the definition file,
+/// so it misses uses in non-workspace files (Odoo core importing `_`, `Command`, ...) and, when
+/// asked from an import, the uses in the definition file itself. Inside a file both scans must
+/// agree exactly.
+#[test]
+fn test_references_index_parity() {
+    use odoo_ls_server::core::graph_recorder::{collect_file_symbols, file_symbol_for_path};
+    use odoo_ls_server::features::call_hierarchy::{node_of_symbol, RangeConverter};
+    let (mut odoo, config) = setup_server(true);
+    let mut session = create_init_session(&mut odoo, config);
+    let test_addons_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("data").join("addons");
+    let mut files = vec![];
+    python_files(&test_addons_path.join("module_1"), &mut files);
+    python_files(&test_addons_path.join("module_2"), &mut files);
+    files.sort();
+    let mut checked = 0;
+    let mut kinds = std::collections::BTreeMap::new();
+    let mut mismatches = vec![];
+    let mut with_unscanned_files = 0;
+    for path in files {
+        let Some(file) = file_symbol_for_path(&session, &path) else { continue };
+        let symbols = collect_file_symbols(session.st(), file);
+        let mut ranges = RangeConverter::default();
+        let mut positions = vec![];
+        for sym in symbols.into_iter().skip(1) {
+            let Some(info) = node_of_symbol(&session, sym) else { continue };
+            let range = ranges.range(&session, &path, info.selection.0, info.selection.1);
+            positions.push((format!("{:?}", sym.typ()), info.qualname.clone(), range.start));
+        }
+        for (typ, qualname, position) in positions {
+            session.sync_odoo.graph_index.as_mut().unwrap().ready = true;
+            let indexed = references_opt(&mut session, &path, position);
+            session.sync_odoo.graph_index.as_mut().unwrap().ready = false;
+            let legacy = references_opt(&mut session, &path, position);
+            session.sync_odoo.graph_index.as_mut().unwrap().ready = true;
+            checked += 1;
+            *kinds.entry(typ.clone()).or_insert(0) += 1;
+            let missing: Vec<_> = legacy.iter().filter(|l| !indexed.contains(l)).collect();
+            // A file the legacy scan visited has more than the definition location in it.
+            let legacy_scanned = |uri: &str| legacy.iter().filter(|l| l.0 == uri).count() > 1;
+            let extra_in_scanned_files: Vec<_> = indexed.iter().filter(|l| !legacy.contains(l) && legacy_scanned(&l.0)).collect();
+            if !missing.is_empty() || !extra_in_scanned_files.is_empty() {
+                mismatches.push(format!("{} {} {}:{}:{}\n  index only: {:?}\n  legacy only: {:?}", typ, qualname, path, position.line + 1, position.character + 1, extra_in_scanned_files, missing));
+            }
+            if indexed != legacy {
+                with_unscanned_files += 1;
+            }
+        }
+    }
+    assert!(checked > 100, "only {checked} symbols checked");
+    assert!(kinds.len() >= 3, "classes, functions and variables are checked: {kinds:?}");
+    assert!(mismatches.is_empty(), "{} of {} symbols differ:\n{}", mismatches.len(), checked, mismatches.join("\n"));
+    println!("parity: {checked} symbols {kinds:?}, {with_unscanned_files} with uses in files the legacy scan does not visit");
+}
+
+/// After an edit, a file waiting for validation has stale rows in the index: references and
+/// incoming calls scan it on the fly, and once it is validated again its edges are replaced.
+#[test]
+fn test_references_and_callers_of_edited_file() {
+    use lsp_types::{CallHierarchyIncomingCallsParams, CallHierarchyPrepareParams, TextDocumentContentChangeEvent};
+    use odoo_ls_server::core::build_scheduler::BuildScheduler;
+    use odoo_ls_server::core::graph_recorder::dirty_files;
+    use odoo_ls_server::core::odoo::{Odoo, SyncOdoo};
+
+    let (mut odoo, config) = setup_server(true);
+    let mut session = create_init_session(&mut odoo, config);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("data").join("addons").join("module_1").join("models").join("graph_models.py").sanitize();
+
+    let callers = |session: &mut SessionInfo, line: u32, character: u32| -> Vec<String> {
+        let items = Odoo::handle_prepare_call_hierarchy(session, CallHierarchyPrepareParams {
+            text_document_position_params: lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: FileMgr::pathname2uri(&path) },
+                position: Position::new(line, character),
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        }).unwrap().unwrap();
+        let calls = Odoo::handle_incoming_calls(session, CallHierarchyIncomingCallsParams {
+            item: items[0].clone(),
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        }).unwrap().unwrap();
+        let mut names: Vec<String> = calls.iter().map(|c| format!("{}:{}", c.from.name, c.from_ranges[0].start.line)).collect();
+        names.sort();
+        names
+    };
+    let reference_lines = |session: &mut SessionInfo| -> Vec<u32> {
+        let mut lines: Vec<u32> = references_opt(session, &path, Position::new(3, 6)).iter().filter(|l| l.0.ends_with("graph_models.py")).map(|l| l.1).collect();
+        lines.sort();
+        lines
+    };
+    assert_eq!(callers(&mut session, 3, 6), vec!["action_feedback:28", "base_method:9"]);
+    assert_eq!(reference_lines(&mut session), vec![3, 9, 28]);
+
+    // child_method now calls helper_function instead of base_method
+    let original = std::fs::read_to_string(&path).unwrap();
+    let edited = original.replace("        return self.base_method()", "        return helper_function(self)");
+    assert_ne!(original, edited);
+    let changes = [TextDocumentContentChangeEvent { range: None, range_length: None, text: edited }];
+    let file_mgr = session.sync_odoo.get_file_mgr();
+    file_mgr.borrow_mut().update_file_info(&mut session, &path, Some(&changes), Some(2), false);
+    // what did_change does, without the validation (deferred in a running server)
+    SyncOdoo::unload_path(&mut session, Path::new(&path));
+    Odoo::on_new_path(&mut session, &path);
+    BuildScheduler::process_rebuilds(&mut session, true);
+    assert!(dirty_files(&session).iter().any(|f| session.st().file_path(*f) == path), "the edited file waits for validation");
+
+    assert_eq!(callers(&mut session, 3, 6), vec!["action_feedback:28", "base_method:9", "child_method:14"]);
+    assert_eq!(callers(&mut session, 8, 9), Vec::<String>::new());
+    assert_eq!(reference_lines(&mut session), vec![3, 9, 14, 28]);
+
+    // validated again: the index answers alone, with the new edges
+    BuildScheduler::process_rebuilds(&mut session, false);
+    assert!(dirty_files(&session).is_empty());
+    assert_eq!(callers(&mut session, 3, 6), vec!["action_feedback:28", "base_method:9", "child_method:14"]);
+    assert_eq!(callers(&mut session, 8, 9), Vec::<String>::new());
+    assert_eq!(reference_lines(&mut session), vec![3, 9, 14, 28]);
+}

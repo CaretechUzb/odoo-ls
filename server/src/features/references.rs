@@ -2,7 +2,9 @@ use crate::constants::{BuildSteps, PackageType};
 use crate::core::build_scheduler::BuildScheduler;
 use crate::core::evaluation::{Evaluation, EvaluationSymbolPtr};
 use crate::core::file_mgr::Ast;
+use crate::core::graph_index;
 use crate::core::graph_recorder::{self, PendingEdge};
+use crate::features::call_hierarchy;
 use crate::core::symbols::Dependencies;
 use crate::core::symbols::ModuleSymbol;
 use crate::core::symbols::storage::XmlDataParent;
@@ -142,13 +144,19 @@ impl ReferenceFeature {
                             }
                         }
                     }
+                    // Python uses come from the graph index when it can serve this target.
+                    let indexed = ReferenceFeature::indexed_python_references(session, definition_source);
+                    let python_from_index = indexed.is_some();
+                    locations.extend(indexed.unwrap_or_default());
                     for &file in files_to_check.iter() {
                         let Some(dep_file_info) = session.sync_odoo.get_file_mgr().borrow().get_file_info(session.st().path(file)) else {
                             continue;
                         };
                         match file {
                             SourceFileKey::File(_) | SourceFileKey::PythonPackage(_) | SourceFileKey::Module(_) => {
-                                locations.extend(ReferenceFeature::references_in_file(session, file, &dep_file_info, &ReferenceTarget::Symbol(definition_source)));
+                                if !python_from_index {
+                                    locations.extend(ReferenceFeature::references_in_file(session, file, &dep_file_info, &ReferenceTarget::Symbol(definition_source)));
+                                }
                             },
                             SourceFileKey::XmlFile(xml_file) => {
                                 let data = dep_file_info.borrow().file_info_ast.borrow().text_document.as_ref()?.contents().to_string();
@@ -386,6 +394,55 @@ impl ReferenceFeature {
             .cmp(&(b.uri.as_str(), b.range.start.line, b.range.start.character)));
         locations.dedup_by(|a, b| a.uri == b.uri && a.range.start == b.range.start);
         locations
+    }
+
+    /// Python uses of `target` from the graph index: REF and CALL edges to it (plus model-name
+    /// strings for a model class), with the rows of files queued for a rebuild replaced by a
+    /// scan of those files. None when the index cannot serve the target (not ready, disabled,
+    /// function-local symbol, no node), so the caller scans files as before.
+    fn indexed_python_references(session: &mut SessionInfo, target: SymbolKey) -> Option<Vec<Location>> {
+        if !matches!(target, SymbolKey::Class(_) | SymbolKey::Function(_) | SymbolKey::Variable(_))
+            || call_hierarchy::check_index(session).is_err()
+            || graph_recorder::target_class(session.st(), target) != graph_recorder::TargetClass::Indexed {
+            return None;
+        }
+        let info = call_hierarchy::node_of_symbol(session, target)?;
+        let node = call_hierarchy::node_row(session, &info.path, &info.qualname, info.occurrence).ok()??;
+        let model = match target {
+            SymbolKey::Class(class) => session.st()[class]._model.as_ref().map(|m| m.name.to_string()),
+            _ => None,
+        };
+        let rows = session.sync_odoo.graph_index.as_ref()?.references(node.id, model.as_deref());
+        let rows = match rows {
+            Ok(rows) => rows,
+            Err(e) => {
+                call_hierarchy::db_failure(session, e);
+                return None;
+            }
+        };
+        let (dirty_paths, dirty_edges) = call_hierarchy::dirty_file_edges(session);
+        let mut sites: Vec<(String, u32, u32)> = rows.into_iter()
+            .filter(|site| !dirty_paths.contains(&site.path))
+            .map(|site| (site.path, site.start, site.end))
+            .collect();
+        for edge in dirty_edges {
+            let matches = match edge.kind {
+                graph_index::EDGE_REF | graph_index::EDGE_CALL => edge.dst == Some(target),
+                graph_index::EDGE_MODEL_REF => model.is_some() && edge.dst_model.as_deref() == model.as_deref(),
+                _ => false,
+            };
+            if matches && let Some(file) = session.st().get_file(edge.src) {
+                sites.push((session.st().file_path(file).to_string(), edge.start, edge.end));
+            }
+        }
+        // One location per (file, start), keeping the innermost expression, like references_in_file.
+        sites.sort();
+        sites.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+        let mut ranges = call_hierarchy::RangeConverter::default();
+        Some(sites.into_iter().map(|(path, start, end)| Location {
+            uri: FileMgr::pathname2uri(&path),
+            range: ranges.range(session, &path, start, end),
+        }).collect())
     }
 
     /// Graph edges of `file`, recorded by a reference walk that is not persisted. Used for files
