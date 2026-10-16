@@ -60,6 +60,7 @@ impl CompletionFeature {
         line: u32,
         character: u32
     ) -> Option<CompletionResponse> {
+        FileInfo::ensure_ast(file_info, session);
         let offset = file_info.borrow().position_to_offset(line, character, session.sync_odoo.encoding);
         let file_info_ast = file_info.borrow().file_info_ast.clone();
         let file_info_ast = file_info_ast.borrow();

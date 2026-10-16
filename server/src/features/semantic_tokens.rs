@@ -118,6 +118,7 @@ impl SemanticTokensFeature {
     }
 
     pub fn tokens_python(session: &mut SessionInfo, file_symbol: SourceFileKey, file_info: &Rc<RefCell<FileInfo>>) -> SemanticTokens {
+        FileInfo::ensure_ast(file_info, session);
         // Raw, unsorted tokens: (range, token type index, modifier bitset). We
         // collect first, then sort by (line, char) and delta-encode at the end.
         let mut raw: Vec<(Range, u32, u32)> = vec![];

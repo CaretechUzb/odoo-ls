@@ -84,7 +84,7 @@ impl PythonArchBuilder {
             ModuleSymbol::load_module_arch(m, session, odoo_addons);
         }
         let (file_info_rc, _) = FileMgr::get_or_recreate_file_info(session, self.file);
-        if self.file_mode && !file_info_rc.borrow().file_info_ast.borrow().ast.is_built() {
+        if !file_info_rc.borrow().file_info_ast.borrow().ast.is_built() {
             file_info_rc.borrow_mut().prepare_ast(session);
         }
         self.file_info = Some(file_info_rc.clone());

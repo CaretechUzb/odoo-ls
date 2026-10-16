@@ -13,7 +13,8 @@ use crate::core::js_arch_builder::{ImportSource, JsImportKind, JsDeclaration, Js
 use crate::core::js_arch_builder::ComponentDescriptor;
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc, OnceLock};
+use std::collections::VecDeque;
+use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, OnceLock};
 use std::{fs};
 use crate::utils::{HashMap, HashSet};
 use crate::core::{config::{DiagnosticFilter, DiagnosticFilterPathType}, js_arch_builder, js_utils};
@@ -366,9 +367,38 @@ pub struct FileInfoAst {
     pub text_hash: u64,
     pub text_document: Option<TextDocument>,
     pub ast: Ast,
+    /// Line offsets of the text, kept when the text is dropped (see [`Self::drop_ast`]) so that
+    /// ranges can still be turned into positions without re-reading or re-parsing the file.
+    line_table: Option<LineTable>,
 }
 
 impl FileInfoAst {
+    /// Free the Python AST and source text of a file, keeping its `text_hash` and a [`LineTable`].
+    /// [`FileInfo::prepare_ast`] re-reads and re-parses the file when the AST is needed again.
+    /// Other kinds of files are left untouched.
+    pub fn drop_ast(&mut self) {
+        let Ast::PythonAst(python_ast) = &mut self.ast else {
+            return;
+        };
+        python_ast.indexed_module = None;
+        if let Some(text_document) = self.text_document.take() {
+            self.line_table = Some(LineTable::new(&text_document));
+        }
+    }
+
+    /// Whether offsets in this file can be turned into positions without reading it.
+    pub fn can_convert_ranges(&self) -> bool {
+        self.text_document.is_some() || self.line_table.is_some()
+    }
+
+    /// The [`LineTable`] standing in for the text, when the text has been dropped.
+    fn dropped_line_table(&self) -> Option<&LineTable> {
+        match self.text_document {
+            None => self.line_table.as_ref(),
+            Some(_) => None,
+        }
+    }
+
     pub fn get_stmts(&self) -> Option<&[Stmt]> {
         match &self.ast {
             Ast::PythonAst(python_ast) => {
@@ -376,6 +406,72 @@ impl FileInfoAst {
             },
             _ => None
         }
+    }
+}
+
+/// What is kept of a dropped [`TextDocument`]: its line starts and length. That is enough to turn an
+/// offset into a position, except for UTF-16/32 columns on a line holding non-ASCII text, for which
+/// the file is read again (but not parsed).
+#[derive(Debug)]
+struct LineTable {
+    index: LineIndex,
+    text_len: TextSize,
+    /// Zero-based numbers of the lines holding non-ASCII text, sorted.
+    non_ascii_lines: Box<[u32]>,
+}
+
+impl LineTable {
+    fn new(text_document: &TextDocument) -> Self {
+        let index = text_document.index().clone();
+        let text = text_document.contents().as_bytes();
+        let non_ascii_lines = if index.is_ascii() {
+            Box::default()
+        } else {
+            let starts = index.line_starts();
+            (0..starts.len())
+                .filter(|&row| {
+                    let end = starts.get(row + 1).map_or(text.len(), |start| start.to_usize());
+                    !text[starts[row].to_usize()..end].is_ascii()
+                })
+                .map(|row| row as u32)
+                .collect()
+        };
+        Self { index, text_len: TextSize::of(text_document.contents()), non_ascii_lines }
+    }
+
+    /// Same as [`offset_to_position_with_line_index`] on the dropped text.
+    fn offset_to_position(&self, path: &str, offset: u32, encoding: PositionEncoding) -> Position {
+        let offset = TextSize::new(offset).min(self.text_len);
+        let row = self.index.line_index(offset).to_zero_indexed();
+        let line_start = self.index.line_starts()[row];
+        let bytes = (offset - line_start).to_usize();
+        let needs_text = !matches!(encoding, PositionEncoding::Utf8) && self.non_ascii_lines.binary_search(&(row as u32)).is_ok();
+        let character = if needs_text {
+            Self::with_disk_text(path, |text_document| {
+                text_document.contents().get(line_start.to_usize()..offset.to_usize()).map(|s| match encoding {
+                    PositionEncoding::Utf16 => s.encode_utf16().count(),
+                    _ => s.chars().count(),
+                })
+            }).flatten().unwrap_or(bytes)
+        } else {
+            bytes
+        };
+        Position::new(row as u32, character as u32)
+    }
+
+    /// Same as `LineIndex::line_end_exclusive` of the line before the one holding `offset`.
+    fn prev_line_end(&self, offset: TextSize) -> TextSize {
+        let row = self.index.line_index(offset).to_zero_indexed().saturating_sub(1);
+        match self.index.line_starts().get(row + 1) {
+            Some(next_line_start) => *next_line_start - TextSize::new(1),
+            None => self.text_len,
+        }
+    }
+
+    /// Read `path` from disk, for the conversions the table alone cannot do.
+    fn with_disk_text<R>(path: &str, f: impl FnOnce(&TextDocument) -> R) -> Option<R> {
+        let contents = fs::read_to_string(path).ok()?;
+        Some(f(&TextDocument::new(contents, -1)))
     }
 }
 
@@ -407,6 +503,7 @@ impl FileInfo {
                 text_hash: 0,
                 text_document: None,
                 ast: Ast::PythonAst(PythonAst::new()),
+                line_table: None,
             })),
             diagnostics: HashMap::default(),
             noqas_blocs: HashMap::default(),
@@ -484,6 +581,11 @@ impl FileInfo {
         let old_hash = self.file_info_ast.borrow().text_hash;
         let new_hash = hash_text_document(self.file_info_ast.borrow().text_document.as_ref().unwrap());
         if old_hash == new_hash {
+            // Unchanged content, but the AST may have been dropped (file_cache off): callers expect
+            // it back. The build drops it again after the file's next validation.
+            if !self.file_info_ast.borrow().ast.is_built() {
+                self._build_ast(session, is_external);
+            }
             return false;
         }
         self.file_info_ast.borrow_mut().text_hash = new_hash;
@@ -519,7 +621,7 @@ impl FileInfo {
         if !is_external {
             self.noqas_blocs = parsed.noqas_blocs;
             self.noqas_lines = parsed.noqas_lines;
-            self.diag_test_comments.extend(parsed.diag_test_comments);
+            self.diag_test_comments = parsed.diag_test_comments;
         }
         let (valid, diagnostics) = Self::syntax_diagnostics(session, &parsed.indexed_module.parsed);
         self.valid = valid;
@@ -677,21 +779,42 @@ impl FileInfo {
 
     /* if ast has been set to none to lower memory usage, try to reload it */
     pub fn prepare_ast(&mut self, session: &mut SessionInfo) {
-        if self.file_info_ast.borrow_mut().text_document.is_none() { //can already be set in xml files
-            match fs::read_to_string(&self.uri) {
-                Ok(content) => {
-                    self.file_info_ast.borrow_mut().text_document = Some(TextDocument::new(content, self.version.unwrap_or(-1)));
-                },
-                Err(_) => {
-                    return;
-                },
-            };
+        let is_python = matches!(self.file_info_ast.borrow().ast, Ast::PythonAst(_));
+        let preloaded = match is_python && self.file_info_ast.borrow().text_document.is_none() {
+            // A pre-parse worker may have parsed it ahead of its validation, see `SyncOdoo::build_modules`.
+            true => SyncOdoo::take_preloaded(session, &self.uri),
+            false => None,
+        };
+        if let Some(preloaded) = preloaded {
+            self.apply_preloaded(session, preloaded);
+        } else {
+            if self.file_info_ast.borrow_mut().text_document.is_none() { //can already be set in xml files
+                match fs::read_to_string(&self.uri) {
+                    Ok(content) => {
+                        self.file_info_ast.borrow_mut().text_document = Some(TextDocument::new(content, self.version.unwrap_or(-1)));
+                    },
+                    Err(_) => {
+                        return;
+                    },
+                };
+            }
+            {
+                let mut fia = self.file_info_ast.borrow_mut();
+                fia.text_hash = hash_text_document(fia.text_document.as_ref().unwrap());
+            }
+            self._build_ast(session, session.sync_odoo.get_file_mgr().borrow().is_in_workspace(&self.uri));
         }
-        {
-            let mut fia = self.file_info_ast.borrow_mut();
-            fia.text_hash = hash_text_document(fia.text_document.as_ref().unwrap());
+        if is_python && !self.opened && !session.sync_odoo.config.file_cache() {
+            AST_REPARSES.fetch_add(1, Ordering::Relaxed);
+            session.sync_odoo.get_file_mgr().borrow().keep_reparsed_ast(&self.uri);
         }
-        self._build_ast(session, session.sync_odoo.get_file_mgr().borrow().is_in_workspace(&self.uri));
+    }
+
+    /// Re-acquire the AST of `file_info` if it was dropped, see [`Self::prepare_ast`].
+    pub fn ensure_ast(file_info: &Rc<RefCell<FileInfo>>, session: &mut SessionInfo) {
+        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+            file_info.borrow_mut().prepare_ast(session);
+        }
     }
 
     /// Scan a parsed module's comment tokens for `noqa` directives and (in test mode)
@@ -934,11 +1057,19 @@ impl FileInfo {
     }
 
     pub fn offset_to_position(&self, offset: u32, encoding: PositionEncoding) -> Position {
-        FileInfo::offset_to_position_with_text_document(self.file_info_ast.borrow().text_document.as_ref().expect("no text_document provided"), offset, encoding)
+        let fia = self.file_info_ast.borrow();
+        if let Some(line_table) = fia.dropped_line_table() {
+            return line_table.offset_to_position(&self.uri, offset, encoding);
+        }
+        FileInfo::offset_to_position_with_text_document(fia.text_document.as_ref().expect("no text_document provided"), offset, encoding)
     }
 
     fn try_offset_to_position(&self, offset: u32, encoding: PositionEncoding) -> Option<Position> {
-        FileInfo::try_offset_to_position_with_text_document(self.file_info_ast.borrow().text_document.as_ref()?, offset, encoding)
+        let fia = self.file_info_ast.borrow();
+        if let Some(line_table) = fia.dropped_line_table() {
+            return Some(line_table.offset_to_position(&self.uri, offset, encoding));
+        }
+        FileInfo::try_offset_to_position_with_text_document(fia.text_document.as_ref()?, offset, encoding)
     }
 
     pub fn text_range_to_range(&self, range: TextRange, encoding: PositionEncoding) -> Range {
@@ -967,13 +1098,21 @@ impl FileInfo {
     }
 
     pub fn position_to_offset(&self, line: u32, char: u32, encoding: PositionEncoding) -> usize {
-        FileInfo::position_to_offset_with_text_document(self.file_info_ast.borrow().text_document.as_ref().expect("no text_document provided"), line, char, encoding)
+        let fia = self.file_info_ast.borrow();
+        if fia.dropped_line_table().is_some()
+            && let Some(offset) = LineTable::with_disk_text(&self.uri, |td| FileInfo::position_to_offset_with_text_document(td, line, char, encoding)) {
+                return offset;
+            }
+        FileInfo::position_to_offset_with_text_document(fia.text_document.as_ref().expect("no text_document provided"), line, char, encoding)
     }
 
     /// Returns the offset of the end of the line preceding the line that `offset` is on
     /// (excluding the newline character), using the document's `LineIndex`.
     pub fn prev_line_end(&self, offset: TextSize) -> Option<TextSize> {
         let ast_ref = self.file_info_ast.borrow();
+        if let Some(line_table) = ast_ref.dropped_line_table() {
+            return Some(line_table.prev_line_end(offset));
+        }
         let td = ast_ref.text_document.as_ref()?;
         let index = td.index();
         let line = index.line_index(offset);
@@ -987,7 +1126,17 @@ pub struct FileMgr {
     pub files: HashMap<String, Rc<RefCell<FileInfo>>>,
     untitled_files: HashMap<String, Rc<RefCell<FileInfo>>>, // key: untitled URI or unique name
     workspace_folders: HashSet<(String, Uri)>,
+    /// Paths of the non-opened files whose dropped AST was parsed again on demand, oldest first.
+    /// Bounded by [`REPARSED_AST_CAPACITY`]: see [`Self::keep_reparsed_ast`].
+    reparsed_asts: RefCell<VecDeque<String>>,
 }
+
+/// How many ASTs parsed again on demand (requests, functions built lazily) stay in memory
+/// when `file_cache` is off.
+const REPARSED_AST_CAPACITY: usize = 64;
+
+/// Number of dropped ASTs parsed again, for the build logs.
+pub static AST_REPARSES: AtomicUsize = AtomicUsize::new(0);
 
 impl Default for FileMgr {
     fn default() -> Self {
@@ -1020,6 +1169,7 @@ impl FileMgr {
             files: HashMap::default(),
             untitled_files: HashMap::default(),
             workspace_folders: HashSet::default(),
+            reparsed_asts: RefCell::new(VecDeque::new()),
         }
     }
 
@@ -1028,6 +1178,38 @@ impl FileMgr {
         Range::new(
             Position::new(range.start().to_u32(), 0),
             Position::new(range.end().to_u32(), 0))
+    }
+
+    /// Drop the AST and text of a file nobody has opened (see [`FileInfoAst::drop_ast`]), unless
+    /// `file_cache` keeps every AST in memory. A file in use right now keeps its AST.
+    pub fn drop_ast(session: &SessionInfo, file_info: &Rc<RefCell<FileInfo>>) {
+        if !session.sync_odoo.config.file_cache() {
+            Self::try_drop_ast(file_info);
+        }
+    }
+
+    fn try_drop_ast(file_info: &Rc<RefCell<FileInfo>>) {
+        if let Ok(file_info) = file_info.try_borrow()
+            && !file_info.opened
+            && let Ok(mut file_info_ast) = file_info.file_info_ast.try_borrow_mut() {
+                file_info_ast.drop_ast();
+            }
+    }
+
+    /// Note that the dropped AST of `path` was parsed again. Only the [`REPARSED_AST_CAPACITY`]
+    /// most recent of these are kept, the AST of the oldest is dropped again.
+    pub fn keep_reparsed_ast(&self, path: &str) {
+        let mut reparsed = self.reparsed_asts.borrow_mut();
+        if let Some(index) = reparsed.iter().position(|p| p == path) {
+            reparsed.remove(index);
+        }
+        reparsed.push_back(path.to_string());
+        while reparsed.len() > REPARSED_AST_CAPACITY {
+            let oldest = reparsed.pop_front().unwrap();
+            if let Some(file_info) = self.files.get(&oldest) {
+                Self::try_drop_ast(file_info);
+            }
+        }
     }
 
     pub fn get_file_info(&self, path: &str) -> Option<Rc<RefCell<FileInfo>>> {
@@ -1045,7 +1227,7 @@ impl FileMgr {
             self.files.get(path)
         };
         if let Some(file) = file {
-            if file.borrow().file_info_ast.borrow().text_document.is_none() {
+            if !file.borrow().file_info_ast.borrow().can_convert_ranges() {
                 file.borrow_mut().prepare_ast(session);
             }
             return file.borrow().text_range_to_range(range, session.sync_odoo.encoding);
@@ -1077,7 +1259,7 @@ impl FileMgr {
             self.files.get(path)
         };
         if let Some(file) = file {
-            if file.borrow().file_info_ast.borrow().text_document.is_none() {
+            if !file.borrow().file_info_ast.borrow().can_convert_ranges() {
                 file.borrow_mut().prepare_ast(session);
             }
             return file.borrow().std_range_to_range(range, session.sync_odoo.encoding);
@@ -1508,5 +1690,43 @@ export class Counter extends Component {
         assert!(parsed.syntax_diagnostics.is_empty());
         assert!(parsed.lint_diagnostics.is_empty());
         assert!(!parse_js_inner(COMPONENT, "/mod/static/src/x.js").decls.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod line_table_tests {
+    use super::*;
+
+    /// A dropped text keeps converting offsets exactly as the text did, including UTF-16/32
+    /// columns on non-ASCII lines (read back from disk) and CRLF line ends.
+    #[test]
+    fn line_table_matches_the_text_document() {
+        let text = "ascii = 1\nстрока = 'é'\r\n😀 = 2\n\nlast";
+        let dir = std::env::temp_dir().join(format!("odools_line_table_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("file.py");
+        fs::write(&path, text).unwrap();
+        let path = path.sanitize();
+        let text_document = TextDocument::new(text.to_string(), -1);
+        let table = LineTable::new(&text_document);
+        assert_eq!(&*table.non_ascii_lines, &[1, 2]);
+        let offsets = (0..=text.len() + 3).filter(|&offset| offset > text.len() || text.is_char_boundary(offset));
+        for offset in offsets {
+            for encoding in [PositionEncoding::Utf8, PositionEncoding::Utf16, PositionEncoding::Utf32] {
+                assert_eq!(
+                    table.offset_to_position(&path, offset as u32, encoding),
+                    FileInfo::offset_to_position_with_text_document(&text_document, offset as u32, encoding),
+                    "offset {offset}, {encoding:?}"
+                );
+            }
+            if offset <= text.len() {
+                let offset = TextSize::new(offset as u32);
+                let index = text_document.index();
+                let line = index.line_index(offset);
+                let prev_line = line.checked_sub(OneIndexed::new(1).unwrap()).unwrap_or(line);
+                assert_eq!(table.prev_line_end(offset), index.line_end_exclusive(prev_line, text), "offset {offset:?}");
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -13,6 +13,7 @@ impl DocumentSymbolFeature {
 
     pub fn get_symbols(session: &mut SessionInfo, file_info: &Rc<RefCell<FileInfo>>) -> Option<DocumentSymbolResponse> {
         let mut results = vec![];
+        FileInfo::ensure_ast(file_info, session);
 
         // JS/TS: delegate to tsserver navtree.
         let is_js = matches!(
