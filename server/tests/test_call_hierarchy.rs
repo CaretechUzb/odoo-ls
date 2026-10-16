@@ -77,8 +77,8 @@ fn test_call_hierarchy() {
     // not a function
     assert!(prepare(&mut session, &m1, 7, 8).unwrap().is_none());
 
-    // plain calls
-    assert_eq!(incoming(&mut session, &helper), vec!["action_feedback@module_1:26x1", "base_method@module_1:8x1"]);
+    // plain calls, in the file and through an import in module_2
+    assert_eq!(incoming(&mut session, &helper), vec!["action_feedback@module_1:26x1", "base_method@module_1:8x1", "module_2_helper_user@module_2:20x1"]);
     // self.method()
     let base_method = item(&mut session, &m1, 8, 9);
     assert_eq!(incoming(&mut session, &base_method), vec!["child_method@module_1:13x1"]);

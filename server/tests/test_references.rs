@@ -210,16 +210,26 @@ fn python_files(dir: &Path, result: &mut Vec<String>) {
 }
 
 /// Every class, function and module/class-level variable (fields and imported names
-/// included) of module_1 and module_2: references from the graph index contain every location
-/// of the legacy file scan. The index may only add locations in files the legacy scan did not
-/// visit: it only scans the current file and the registered dependents of the definition file,
-/// so it misses uses in non-workspace files (Odoo core importing `_`, `Command`, ...) and, when
-/// asked from an import, the uses in the definition file itself. Inside a file both scans must
-/// agree exactly.
+/// included) of module_1 and module_2: references from the graph index equal the legacy scan.
+///
+/// `get_references` on the legacy path only scans the current file and the registered
+/// dependents of the definition file, so it misses uses elsewhere (non-workspace files such as
+/// Odoo core importing `_` or `Command`; the definition file itself when asked from an
+/// import). The comparison is therefore made file by file: for every file where either path
+/// reports something, the index must equal the legacy scan of that file, except for one
+/// deliberate difference: CALL edges follow imports, so a call through an imported name
+/// (`helper_function(2)` after `from ... import helper_function`) is a use of the function,
+/// where the legacy scan only reports the import line. Legacy hits in a package's
+/// `__init__.py` come back with the package directory as uri and no range; the index reports
+/// the position in the `__init__.py`.
 #[test]
 fn test_references_index_parity() {
     use odoo_ls_server::core::graph_recorder::{collect_file_symbols, file_symbol_for_path};
     use odoo_ls_server::features::call_hierarchy::{node_of_symbol, RangeConverter};
+    use odoo_ls_server::features::goto_utils::{GotoRequest, GotoSourceType, GotoUtils};
+    use odoo_ls_server::features::references::ReferenceFeature;
+    use odoo_ls_server::constants::SymType;
+    type Loc = (String, u32, u32, u32, u32);
     let (mut odoo, config) = setup_server(true);
     let mut session = create_init_session(&mut odoo, config);
     let test_addons_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("data").join("addons");
@@ -230,7 +240,8 @@ fn test_references_index_parity() {
     let mut checked = 0;
     let mut kinds = std::collections::BTreeMap::new();
     let mut mismatches = vec![];
-    let mut with_unscanned_files = 0;
+    let (mut wider, mut calls_through_imports, mut package_hits) = (0, 0, 0);
+    let mut file_scans: std::collections::HashMap<(String, String), Vec<Loc>> = Default::default();
     for path in files {
         let Some(file) = file_symbol_for_path(&session, &path) else { continue };
         let symbols = collect_file_symbols(session.st(), file);
@@ -249,22 +260,75 @@ fn test_references_index_parity() {
             session.sync_odoo.graph_index.as_mut().unwrap().ready = true;
             checked += 1;
             *kinds.entry(typ.clone()).or_insert(0) += 1;
-            let missing: Vec<_> = legacy.iter().filter(|l| !indexed.contains(l)).collect();
-            // A file the legacy scan visited has more than the definition location in it.
-            let legacy_scanned = |uri: &str| legacy.iter().filter(|l| l.0 == uri).count() > 1;
-            let extra_in_scanned_files: Vec<_> = indexed.iter().filter(|l| !legacy.contains(l) && legacy_scanned(&l.0)).collect();
-            if !missing.is_empty() || !extra_in_scanned_files.is_empty() {
-                mismatches.push(format!("{} {} {}:{}:{}\n  index only: {:?}\n  legacy only: {:?}", typ, qualname, path, position.line + 1, position.character + 1, extra_in_scanned_files, missing));
+            if indexed == legacy {
+                continue;
             }
-            if indexed != legacy {
-                with_unscanned_files += 1;
+            wider += 1;
+            let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path).unwrap();
+            let targets: Vec<_> = GotoUtils::get_symbols(&mut session, GotoRequest::Definition, file, &file_info, position.line, position.character)
+                .into_iter()
+                .filter_map(|s| match s.source { GotoSourceType::SymbolKey(k) if matches!(k.typ(), SymType::CLASS | SymType::FUNCTION | SymType::VARIABLE) => Some(k), _ => None })
+                .collect();
+            let mut uris: Vec<String> = indexed.iter().chain(legacy.iter()).map(|l| l.0.clone()).collect();
+            uris.sort();
+            uris.dedup();
+            for uri in uris {
+                let scan_path = FileMgr::uri2pathname(&uri);
+                if Path::new(&scan_path).is_dir() {
+                    // Legacy reports hits in a package's __init__.py with the package directory
+                    // as uri and an empty range; the index reports them in the __init__.py.
+                    let init_uri = FileMgr::pathname2uri(&Path::new(&scan_path).join("__init__.py").sanitize()).to_string();
+                    if !indexed.iter().any(|l| l.0 == init_uri) {
+                        mismatches.push(format!("{typ} {qualname} {path}:{}:{}: index misses {init_uri}", position.line + 1, position.character + 1));
+                    }
+                    continue;
+                }
+                // legacy scan of that file, plus what get_references reported there (the definition)
+                let mut expected: Vec<Loc> = legacy.iter().filter(|l| l.0 == uri).cloned().collect();
+                if let Some(scan_file) = file_symbol_for_path(&session, &scan_path) {
+                    for target in targets.iter() {
+                        let key = (scan_path.clone(), format!("{target:?}"));
+                        if !file_scans.contains_key(&key) {
+                            let scanned = ReferenceFeature::scan_file_references(&mut session, scan_file, *target).into_iter()
+                                .map(|l| (l.uri.to_string(), l.range.start.line, l.range.start.character, l.range.end.line, l.range.end.character))
+                                .collect();
+                            file_scans.insert(key.clone(), scanned);
+                        }
+                        expected.extend(file_scans[&key].iter().cloned());
+                    }
+                }
+                let text = std::fs::read_to_string(&scan_path).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                let in_file: Vec<&Loc> = indexed.iter().filter(|l| l.0 == uri).collect();
+                // hits of the legacy scan of a package's __init__.py carry no position (see above)
+                let legacy_package_hits = expected.iter().any(|l| l.0 != uri);
+                expected.retain(|l| l.0 == uri);
+                for l in expected.iter() {
+                    if !in_file.contains(&l) {
+                        mismatches.push(format!("{typ} {qualname} {path}:{}:{}: index misses {l:?}", position.line + 1, position.character + 1));
+                    }
+                }
+                for l in in_file {
+                    if expected.contains(l) {
+                        continue;
+                    }
+                    let followed_by_call = lines.get(l.3 as usize).and_then(|line| line.get(l.4 as usize..)).is_some_and(|rest| rest.starts_with('('));
+                    if followed_by_call {
+                        calls_through_imports += 1;
+                    } else if legacy_package_hits {
+                        package_hits += 1;
+                    } else {
+                        mismatches.push(format!("{typ} {qualname} {path}:{}:{}: index adds {l:?}", position.line + 1, position.character + 1));
+                    }
+                }
             }
         }
     }
     assert!(checked > 100, "only {checked} symbols checked");
     assert!(kinds.len() >= 3, "classes, functions and variables are checked: {kinds:?}");
-    assert!(mismatches.is_empty(), "{} of {} symbols differ:\n{}", mismatches.len(), checked, mismatches.join("\n"));
-    println!("parity: {checked} symbols {kinds:?}, {with_unscanned_files} with uses in files the legacy scan does not visit");
+    assert!(calls_through_imports >= 1, "the call through an import in module_2 is reported");
+    assert!(mismatches.is_empty(), "{} differences:\n{}", mismatches.len(), mismatches.join("\n"));
+    println!("parity: {checked} symbols {kinds:?}; {wider} reach files the legacy request does not scan; {calls_through_imports} calls through imports; {package_hits} hits in __init__.py");
 }
 
 /// After an edit, a file waiting for validation has stale rows in the index: references and
@@ -298,11 +362,11 @@ fn test_references_and_callers_of_edited_file() {
         names
     };
     let reference_lines = |session: &mut SessionInfo| -> Vec<u32> {
-        let mut lines: Vec<u32> = references_opt(session, &path, Position::new(3, 6)).iter().filter(|l| l.0.ends_with("graph_models.py")).map(|l| l.1).collect();
+        let mut lines: Vec<u32> = references_opt(session, &path, Position::new(3, 6)).iter().filter(|l| l.0.ends_with("module_1/models/graph_models.py")).map(|l| l.1).collect();
         lines.sort();
         lines
     };
-    assert_eq!(callers(&mut session, 3, 6), vec!["action_feedback:28", "base_method:9"]);
+    assert_eq!(callers(&mut session, 3, 6), vec!["action_feedback:28", "base_method:9", "module_2_helper_user:21"]);
     assert_eq!(reference_lines(&mut session), vec![3, 9, 28]);
 
     // child_method now calls helper_function instead of base_method
@@ -318,14 +382,14 @@ fn test_references_and_callers_of_edited_file() {
     BuildScheduler::process_rebuilds(&mut session, true);
     assert!(dirty_files(&session).iter().any(|f| session.st().file_path(*f) == path), "the edited file waits for validation");
 
-    assert_eq!(callers(&mut session, 3, 6), vec!["action_feedback:28", "base_method:9", "child_method:14"]);
+    assert_eq!(callers(&mut session, 3, 6), vec!["action_feedback:28", "base_method:9", "child_method:14", "module_2_helper_user:21"]);
     assert_eq!(callers(&mut session, 8, 9), Vec::<String>::new());
     assert_eq!(reference_lines(&mut session), vec![3, 9, 14, 28]);
 
     // validated again: the index answers alone, with the new edges
     BuildScheduler::process_rebuilds(&mut session, false);
     assert!(dirty_files(&session).is_empty());
-    assert_eq!(callers(&mut session, 3, 6), vec!["action_feedback:28", "base_method:9", "child_method:14"]);
+    assert_eq!(callers(&mut session, 3, 6), vec!["action_feedback:28", "base_method:9", "child_method:14", "module_2_helper_user:21"]);
     assert_eq!(callers(&mut session, 8, 9), Vec::<String>::new());
     assert_eq!(reference_lines(&mut session), vec![3, 9, 14, 28]);
 }

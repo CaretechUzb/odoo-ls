@@ -396,6 +396,16 @@ impl ReferenceFeature {
         locations
     }
 
+    /// Legacy reference scan of one Python file (re-evaluates the file). Used by tests to
+    /// check the graph index against it.
+    pub fn scan_file_references(session: &mut SessionInfo, file: SourceFileKey, target: SymbolKey) -> Vec<Location> {
+        let (file_info, _) = FileMgr::get_or_recreate_file_info(session, file);
+        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+            file_info.borrow_mut().prepare_ast(session);
+        }
+        ReferenceFeature::references_in_file(session, file, &file_info, &ReferenceTarget::Symbol(target))
+    }
+
     /// Python uses of `target` from the graph index: REF and CALL edges to it (plus model-name
     /// strings for a model class), with the rows of files queued for a rebuild replaced by a
     /// scan of those files. None when the index cannot serve the target (not ready, disabled,
