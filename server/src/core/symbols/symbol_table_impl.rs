@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell, collections::{VecDeque, hash_map}, path::Path, rc::Rc,
+    cell::RefCell, collections::VecDeque, path::Path, rc::Rc,
 };
 
 use lsp_types::{Diagnostic, DiagnosticTag, Range, SymbolKind};
@@ -23,6 +23,7 @@ use crate::{
                 buildable::ResettableBuildable as _,
                 dependency_mgr::{DependenciesTable, DependentsTable},
                 lifecycle::NameTakenError,
+                scope_map::NameEntry,
                 xml::xml_field_symbol::XmlFieldName,
                 FileContentParent, FileSystemSymbolParent, SymbolTable,
             },
@@ -547,22 +548,23 @@ impl SymbolTable {
         }
     }
 
-    pub fn iter_symbols(&self, target: SymbolKey) -> hash_map::Iter<'_, OYarn, HashMap<u32, Vec<SymbolKey>>> {
+    /// The names declared in the body of `target`, in name order.
+    pub fn iter_symbols(&self, target: SymbolKey) -> impl Iterator<Item = NameEntry<'_>> {
         match target {
             SymbolKey::File(f) => {
-                self[f].symbols().iter()
+                self[f].symbols().names()
             }
             SymbolKey::Root(_) => panic!(),
             SymbolKey::Namespace(_) => panic!(),
             SymbolKey::DiskDir(_) => panic!(),
-            SymbolKey::Module(m) => self[m].symbols().iter(),
-            SymbolKey::PythonPackage(p) => self[p].symbols().iter(),
+            SymbolKey::Module(m) => self[m].symbols().names(),
+            SymbolKey::PythonPackage(p) => self[p].symbols().names(),
             SymbolKey::Compiled(_) => panic!(),
             SymbolKey::Class(c) => {
-                self[c].symbols().iter()
+                self[c].symbols().names()
             },
             SymbolKey::Function(f) => {
-                self[f].symbols().iter()
+                self[f].symbols().names()
             },
             SymbolKey::Variable(_) => panic!(),
             SymbolKey::XmlFile(_) => panic!("despite having symbols, XmlFileSymbol doesn't support sections"),
@@ -876,10 +878,10 @@ impl SymbolTable {
         let Some(target_sym_mgr) = self.try_as_symbol_mgr(target) else {
             return ContentSymbols::default();
         };
-        let sections = target_sym_mgr.symbols().get(name);
-        let mut content = if let Some(sections) = sections {
+        let entry = target_sym_mgr.symbols().get(name);
+        let mut content = if let Some(entry) = entry {
             let section: SectionRange = target_sym_mgr.get_section_for(position);
-            self.get_loc_symbol(target_sym_mgr, sections, position, &SectionIndex::INDEX(section.index), &mut HashSet::default())
+            self.get_loc_symbol(target_sym_mgr, entry, position, &SectionIndex::INDEX(section.index), &mut HashSet::default())
         } else {
             ContentSymbols::default()
         };
@@ -900,15 +902,12 @@ impl SymbolTable {
         let current_section = target_sym_mgr.get_section_for(position);
         let current_index = SectionIndex::INDEX(current_section.index);
 
-        for (name, section_map) in target_sym_mgr.symbols().iter() {
-            if !name.starts_with(name_prefix) {
-                continue;
-            }
+        for entry in target_sym_mgr.symbols().names_with_prefix(name_prefix) {
             let mut seen = HashSet::default();
-            let content = self.get_loc_symbol(target_sym_mgr, section_map, position, &current_index, &mut seen);
+            let content = self.get_loc_symbol(target_sym_mgr, entry, position, &current_index, &mut seen);
 
             if !content.symbols.is_empty() {
-                result.insert(name.clone(), content.symbols);
+                result.insert(entry.name().clone(), content.symbols);
             }
         }
         result
@@ -931,8 +930,8 @@ impl SymbolTable {
         }
     }
 
-    ///given all the sections of a symbol and a position, return all the Symbols that can represent the symbol
-    pub fn get_loc_symbol(&self, target: &dyn SymbolMgr, map: &HashMap<u32, Vec<SymbolKey>>, position: u32, index: &SectionIndex, acc: &mut HashSet<u32>) -> ContentSymbols {
+    ///given all the declarations of a name in a symbol and a position, return all the Symbols that can represent the name
+    pub fn get_loc_symbol(&self, target: &dyn SymbolMgr, entry: NameEntry<'_>, position: u32, index: &SectionIndex, acc: &mut HashSet<u32>) -> ContentSymbols {
         let mut res = ContentSymbols::default();
         match index {
                 SectionIndex::NONE => { return res; },
@@ -943,12 +942,11 @@ impl SymbolTable {
                 }
                 let section = target.get_sections().get(*index as usize).unwrap();
                 //take index and try to find an evaluation. if no evaluation is found, search in previous index, and mix evaluation if there is multiple precedences
-                if let Some(symbols) = map.get(index) {
-                    for &sym_key in symbols.iter().rev() {
-                        if self.range(sym_key).start().to_u32() < position {
-                            res.symbols.push(sym_key);
-                            break;
-                        }
+                for row in entry.section(*index).iter().rev() {
+                    let sym_key = *row.key();
+                    if self.range(sym_key).start().to_u32() < position {
+                        res.symbols.push(sym_key);
+                        break;
                     }
                 }
                 acc.insert(*index);
@@ -956,7 +954,7 @@ impl SymbolTable {
                     res.always_defined = true;
                     return res;
                 }
-                res = self.get_loc_symbol(target, map, position, &section.previous_indexes, acc);
+                res = self.get_loc_symbol(target, entry, position, &section.previous_indexes, acc);
             },
             SectionIndex::OR(indexes) => {
                 if indexes.is_empty() {
@@ -964,7 +962,7 @@ impl SymbolTable {
                 }
                 res.always_defined = true;
                 for index in indexes.iter() {
-                    let sub_result = self.get_loc_symbol(target, map, position, index, acc);
+                    let sub_result = self.get_loc_symbol(target, entry, position, index, acc);
                     res.symbols.extend(sub_result.symbols);
                     res.always_defined = res.always_defined && sub_result.always_defined;
                 }
@@ -1286,11 +1284,9 @@ impl SymbolTable {
             SymbolKey::PythonPackage(p) => {self[p].symbols().get(name)},
             _ => {None}
         } {
-            for sym_list in symbols.values() {
-                for &key in sym_list.iter() {
-                    if self.range(key).start() == range.start() {
-                        return Some(key);
-                    }
+            for &key in symbols.keys() {
+                if self.range(key).start() == range.start() {
+                    return Some(key);
                 }
             }
         }
@@ -1646,22 +1642,21 @@ impl SymbolTable {
 
     /// Drops the spare capacity of the evaluation and argument vectors of `root` and of every
     /// symbol declared in its body (classes, functions and variables, recursively; sub-files of
-    /// a package or module are not visited).
+    /// a package or module are not visited), and of their scope maps and flow sections.
     /// A Vec gets room for 4 elements on its first push, and most symbols hold a single
     /// evaluation, so without this ~3/4 of the evaluation storage is never used.
     pub fn shrink_evaluations(&mut self, root: SymbolKey) {
         let mut stack = vec![root];
         while let Some(key) = stack.pop() {
+            if let Ok(parent) = FileContentParent::try_from(key) {
+                parent.shrink_scope(self);
+                stack.extend(parent.as_symbol_mgr(self).symbols().keys().copied());
+            }
             match key {
-                SymbolKey::File(f) => stack.extend(iter_symbol_keys(&self[f]).copied()),
-                SymbolKey::PythonPackage(p) => stack.extend(iter_symbol_keys(&self[p]).copied()),
-                SymbolKey::Module(m) => stack.extend(iter_symbol_keys(&self[m]).copied()),
-                SymbolKey::Class(c) => stack.extend(iter_symbol_keys(&self[c]).copied()),
                 SymbolKey::Function(f) => {
                     let function = &mut self[f];
                     function.evaluations.shrink_to_fit();
                     function.args.shrink_to_fit();
-                    stack.extend(iter_symbol_keys(&self[f]).copied());
                 },
                 SymbolKey::Variable(v) => self[v].evaluations.shrink_to_fit(),
                 _ => {},
@@ -1834,32 +1829,30 @@ impl SymbolTable {
         let mut result = file.into();
         let file_sym_mgr = self.as_symbol_mgr(result); // formely Rc (strong)
         let section_id = file_sym_mgr.get_section_for(offset);
-        for sym_map in file_sym_mgr.symbols().values() {
-            let Some(symbols) = sym_map.get(&section_id.index) else { continue };
-            for &key in symbols {
-                match key {
-                    SymbolKey::Class(c) => {
-                        let class = &self[c];
-                        let range = match is_param {
-                            true => class.range.start().to_u32(),
-                            false => class.body_range.start().to_u32(),
-                        };
-                        if range <= offset && class.body_range.end().to_u32() > offset {
-                            result = self.get_scope_symbol(key, offset, is_param);
-                        }
-                    },
-                    SymbolKey::Function(f) => {
-                        let function = &self[f];
-                        let range = match is_param {
-                            true => function.range.start().to_u32(),
-                            false => function.body_range.start().to_u32(),
-                        };
-                        if range <= offset && function.body_range.end().to_u32() > offset {
-                            result = self.get_scope_symbol(key, offset, is_param);
-                        }
+        for row in file_sym_mgr.symbols().rows_in_section(section_id.index) {
+            let key = *row.key();
+            match key {
+                SymbolKey::Class(c) => {
+                    let class = &self[c];
+                    let range = match is_param {
+                        true => class.range.start().to_u32(),
+                        false => class.body_range.start().to_u32(),
+                    };
+                    if range <= offset && class.body_range.end().to_u32() > offset {
+                        result = self.get_scope_symbol(key, offset, is_param);
                     }
-                    _ => {}
+                },
+                SymbolKey::Function(f) => {
+                    let function = &self[f];
+                    let range = match is_param {
+                        true => function.range.start().to_u32(),
+                        false => function.body_range.start().to_u32(),
+                    };
+                    if range <= offset && function.body_range.end().to_u32() > offset {
+                        result = self.get_scope_symbol(key, offset, is_param);
+                    }
                 }
+                _ => {}
             }
         }
         result

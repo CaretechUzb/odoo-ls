@@ -8,6 +8,7 @@ use crate::{
             XmlAssetKey, XmlDataKey, XmlFieldKey, XmlFileKey, XmlRecordKey,
         },
         SymbolMgr,
+        storage::scope_map::ScopeMap,
     },
     oyarn,
     utils::{HashMap, HashSet},
@@ -36,7 +37,7 @@ impl FileContentParent {
         }
     }
     
-    pub(super) fn symbols_mut(self, st: &mut SymbolTable) -> &mut HashMap<OYarn, HashMap<u32, Vec<SymbolKey>>> {
+    pub(super) fn symbols_mut(self, st: &mut SymbolTable) -> &mut ScopeMap {
         match self {
             Self::File(f) => &mut st[f].symbols,
             Self::PythonPackage(p) => &mut st[p].symbols,
@@ -48,17 +49,24 @@ impl FileContentParent {
     
     pub(super) fn add_child(self, st: &mut SymbolTable, name: &str, child: SymbolKey, position: u32) {
         let section = self.as_symbol_mgr(st).get_section_for(position).index;
-        let name = oyarn!("{}", name);
-        self.symbols_mut(st).entry(name).or_default()
-            .entry(section).or_default()
-            .push(child);
-    } 
-    
+        self.symbols_mut(st).insert(name, section, child);
+    }
+
+    /// Drops the spare capacity of the scope map and of the flow sections.
+    pub fn shrink_scope(self, st: &mut SymbolTable) {
+        let (symbols, sections) = match self {
+            Self::File(f) => { let s = &mut st[f]; (&mut s.symbols, &mut s.sections) },
+            Self::PythonPackage(p) => { let s = &mut st[p]; (&mut s.symbols, &mut s.sections) },
+            Self::Module(m) => { let s = &mut st[m]; (&mut s.symbols, &mut s.sections) },
+            Self::Class(c) => { let s = &mut st[c]; (&mut s.symbols, &mut s.sections) },
+            Self::Function(f) => { let s = &mut st[f]; (&mut s.symbols, &mut s.sections) },
+        };
+        symbols.shrink_to_fit();
+        sections.shrink_to_fit();
+    }
+
     pub fn children(&self, st: &SymbolTable) -> impl Iterator<Item = SymbolKey> {
-        self.as_symbol_mgr(st).symbols().values()
-            .flat_map(|section| section.values())
-            .flatten()
-            .copied()
+        self.as_symbol_mgr(st).symbols().keys().copied()
     }
 }
 

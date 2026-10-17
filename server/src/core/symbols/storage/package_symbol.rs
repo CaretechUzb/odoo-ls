@@ -1,3 +1,4 @@
+use super::scope_map::ScopeMap;
 use weak_table::PtrWeakHashSet;
 
 use crate::{constants::{BuildStatus, BuildSteps, OYarn}, core::{file_mgr::NoqaInfo, model::Model, symbols::{storage::{dependency_mgr::{DependenciesTable, DependentsTable}, FileSystemSymbolParent}, symbol_keys::SymbolKey}}, oyarn, utils::PathSanitizer};
@@ -29,7 +30,7 @@ pub struct PythonPackageSymbol {
 
     // parent / child symbols
     parent: FileSystemSymbolParent,
-    pub(super) symbols: HashMap<OYarn, HashMap<u32, Vec<SymbolKey>>>,
+    pub(super) symbols: ScopeMap,
     pub(super) fs_symbols: HashMap<OYarn, SymbolKey>,
 }
 
@@ -50,7 +51,7 @@ impl PythonPackageSymbol {
             self_import: false, //indicates that if unloaded, the symbol should be added in the rebuild automatically as nothing depends on it (used for root packages)
             fs_symbols: HashMap::default(),
             sections: vec![],
-            symbols: HashMap::default(),
+            symbols: ScopeMap::default(),
             model_dependencies: PtrWeakHashSet::new(),
             dependencies: DependenciesTable::default(),
             dependents: DependentsTable::default(),

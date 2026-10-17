@@ -1,6 +1,7 @@
+use super::scope_map::ScopeMap;
 use weak_table::PtrWeakHashSet;
 
-use crate::{constants::{BuildStatus, BuildSteps, MissingDataSource, OYarn}, core::{file_mgr::NoqaInfo, model::Model, symbols::{storage::{dependency_mgr::{DependenciesTable, DependentsTable}, FileSystemSymbolParent}, symbol_keys::SymbolKey}}, oyarn};
+use crate::{constants::{BuildStatus, BuildSteps, MissingDataSource, OYarn}, core::{file_mgr::NoqaInfo, model::Model, symbols::{storage::{dependency_mgr::{DependenciesTable, DependentsTable}, FileSystemSymbolParent}}}, oyarn};
 use std::{cell::RefCell, rc::Weak};
 use crate::utils::HashMap;
 
@@ -29,7 +30,7 @@ pub struct FileSymbol {
 
     // parent / child symbols
     parent: FileSystemSymbolParent,
-    pub(super) symbols: HashMap<OYarn, HashMap<u32, Vec<SymbolKey>>>,
+    pub(super) symbols: ScopeMap,
 }
 
 impl FileSymbol {
@@ -47,7 +48,7 @@ impl FileSymbol {
             in_workspace: false,
             self_import: false,
             sections: vec![],
-            symbols: HashMap::default(),
+            symbols: ScopeMap::default(),
             model_dependencies: PtrWeakHashSet::new(),
             dependencies: DependenciesTable::default(),
             dependents: DependentsTable::default(),

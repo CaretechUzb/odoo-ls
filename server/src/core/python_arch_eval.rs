@@ -736,7 +736,7 @@ impl PythonArchEval {
                 if is_first && !is_static && matches!(scope, SymbolKey::Class(_)) {
                     let is_class_method = session.st()[f].is_class_method;
                     let arg_name = arg.parameter.name.id.as_str();
-                    let arg_sym = session.st()[f].symbols().get(arg_name).unwrap().get(&0).unwrap()[0]; //get first declaration
+                    let arg_sym = *session.st()[f].symbols().get(arg_name).unwrap().section(0)[0].key(); //get first declaration
                     let v = arg_sym.unwrap_variable_key();
                     let evaluation = Evaluation::new_self(scope, Some(!is_class_method));
                     session.st_mut()[v].evaluations.push(evaluation);
@@ -757,7 +757,7 @@ impl PythonArchEval {
                                                 &mut deps);
                     session.st_mut().insert_dependencies(self.file, &deps, self.current_step);
                     let arg_name = arg.parameter.name.id.as_str();
-                    let arg_sym = session.st()[f].symbols().get(arg_name).unwrap().get(&0).unwrap()[0];
+                    let arg_sym = *session.st()[f].symbols().get(arg_name).unwrap().section(0)[0].key();
                     let v = arg_sym.unwrap_variable_key();
                     session.st_mut()[v].evaluations = eval;
                     self.diagnostics.extend(diags);
@@ -774,7 +774,7 @@ impl PythonArchEval {
                                                 &mut deps);
                     session.st_mut().insert_dependencies(self.file, &deps, self.current_step);
                     let arg_name = arg.parameter.name.id.as_str();
-                    let arg_sym = session.st()[f].symbols().get(arg_name).unwrap().get(&0).unwrap()[0];
+                    let arg_sym = *session.st()[f].symbols().get(arg_name).unwrap().section(0)[0].key();
                     let v = arg_sym.unwrap_variable_key();
                     session.st_mut()[v].evaluations = eval;
                     self.diagnostics.extend(diags);

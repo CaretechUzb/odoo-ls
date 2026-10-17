@@ -1,11 +1,9 @@
-use crate::utils::HashMap;
-
 use duplicate::duplicate_item;
 use ruff_text_size::TextSize;
 
-use crate::{constants::OYarn, core::symbols::symbol_keys::SymbolKey};
+use crate::core::symbols::symbol_keys::SymbolKey;
 
-use super::{class_symbol::ClassSymbol, file_symbol::FileSymbol, function_symbol::FunctionSymbol, module_symbol::ModuleSymbol, package_symbol::PythonPackageSymbol};
+use super::{scope_map::ScopeMap, class_symbol::ClassSymbol, file_symbol::FileSymbol, function_symbol::FunctionSymbol, module_symbol::ModuleSymbol, package_symbol::PythonPackageSymbol};
 
 #[derive(Debug, Default)]
 pub struct ContentSymbols {
@@ -30,7 +28,7 @@ pub struct SectionRange {
 
 pub trait SymbolMgr {
     fn get_sections(&self) -> &[SectionRange];
-    fn symbols(&self) -> &HashMap<OYarn, HashMap<u32, Vec<SymbolKey>>>;
+    fn symbols(&self) -> &ScopeMap;
     fn get_section_for(&self, position: u32) -> SectionRange;
     fn get_last_index(&self) -> u32;
     fn add_section(&mut self, range_start: TextSize, maybe_previous_indexes: Option<SectionIndex>) -> SectionRange;
@@ -82,7 +80,7 @@ impl SymbolMgr for name {
         &self.sections
     }
 
-    fn symbols(&self) -> &HashMap<OYarn, HashMap<u32, Vec<SymbolKey>>> {
+    fn symbols(&self) -> &ScopeMap {
         &self.symbols
     }
 
@@ -114,8 +112,6 @@ impl SymbolMgr for name {
     }
 }
 
-pub fn iter_symbol_keys(symbol: &impl SymbolMgr) -> impl Iterator<Item = & SymbolKey> {
-    symbol.symbols().values()
-        .flat_map(|section| section.values())
-        .flatten()
+pub fn iter_symbol_keys(symbol: &impl SymbolMgr) -> impl Iterator<Item = &SymbolKey> {
+    symbol.symbols().keys()
 }

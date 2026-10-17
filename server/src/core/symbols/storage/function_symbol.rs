@@ -1,3 +1,4 @@
+use super::scope_map::ScopeMap;
 use crate::{core::symbols::storage::FileContentParent, utils::HashMap};
 
 use lsp_types::Diagnostic;
@@ -57,7 +58,7 @@ pub struct FunctionSymbol {
     // parent / child symbols
     parent: FileContentParent,
     //--- Body content
-    pub(super) symbols: HashMap<OYarn, HashMap<u32, Vec<SymbolKey>>>,
+    pub(super) symbols: ScopeMap,
 }
 
 impl FunctionSymbol {
@@ -78,7 +79,7 @@ impl FunctionSymbol {
             current_build_step: BuildSteps::ARCH,
             build_status: BuildStatus::PENDING,
             sections: vec![],
-            symbols: HashMap::default(),
+            symbols: ScopeMap::default(),
             args: vec![],
             is_overloaded: false,
             is_class_method: false,

@@ -18,6 +18,7 @@ pub mod symbol_mgr;
 pub mod dependency_mgr;
 pub mod metrics;
 pub mod parents;
+pub mod scope_map;
 mod ext_symbol_store;
 
 use crate::{constants::OYarn, core::symbols::{

@@ -1,13 +1,14 @@
+use super::scope_map::ScopeMap;
 use ruff_text_size::{TextRange, TextSize};
 use crate::core::symbols::storage::FileContentParent;
-use crate::utils::{HashMap, HashSet};
+use crate::utils::HashSet;
 use std::cell::RefCell;
 
 use crate::constants::OYarn;
 use crate::core::file_mgr::NoqaInfo;
 use crate::core::model::ModelData;
 use crate::oyarn;
-use crate::core::symbols::symbol_keys::{ClassKey, SymbolKey, Wk};
+use crate::core::symbols::symbol_keys::{ClassKey, Wk};
 use crate::threads::SessionInfo;
 
 use super::symbol_mgr::{SectionRange, SymbolMgr};
@@ -31,7 +32,7 @@ pub struct ClassSymbol {
     // parent / child symbols
     parent: FileContentParent,
     //--- Body symbols
-    pub(super) symbols: HashMap<OYarn, HashMap<u32, Vec<SymbolKey>>>,
+    pub(super) symbols: ScopeMap,
 }
 
 impl ClassSymbol {
@@ -45,7 +46,7 @@ impl ClassSymbol {
             body_range: TextRange::new(body_start, range.end()),
             doc_string: None,
             sections: vec![],
-            symbols: HashMap::default(),
+            symbols: ScopeMap::default(),
             bases: vec![],
             _model: None,
             noqas: NoqaInfo::None,
