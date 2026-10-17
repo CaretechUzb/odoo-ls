@@ -661,13 +661,9 @@ impl PythonArchBuilder {
         for arg in parameters.posonlyargs.iter() {
             let param = session.st_mut().add_new_variable(function_key, &arg.parameter.name.id, arg.range);
             session.st_mut()[param].is_parameter = true;
-            let mut default = None;
-            if arg.default.is_some() {
-                default = Some(Evaluation::new_none()); //TODO evaluate default? actually only used to know if there is a default or not
-            }
             session.st_mut()[function_key].args.push(Argument {
                 symbol: param.into(),
-                default_value: default,
+                has_default: arg.default.is_some(),
                 arg_type: ArgumentType::POS_ONLY,
                 annotation: arg.parameter.annotation.clone(),
             });
@@ -675,13 +671,9 @@ impl PythonArchBuilder {
         for arg in parameters.args.iter() {
             let param = session.st_mut().add_new_variable(function_key, &arg.parameter.name.id, arg.range);
             session.st_mut()[param].is_parameter = true;
-            let mut default = None;
-            if arg.default.is_some() {
-                default = Some(Evaluation::new_none()); //TODO evaluate default? actually only used to know if there is a default or not
-            }
             session.st_mut()[function_key].args.push(Argument {
                 symbol: param.into(),
-                default_value: default,
+                has_default: arg.default.is_some(),
                 arg_type: ArgumentType::ARG,
                 annotation: arg.parameter.annotation.clone(),
             });
@@ -691,7 +683,7 @@ impl PythonArchBuilder {
             session.st_mut()[param].is_parameter = true;
             session.st_mut()[function_key].args.push(Argument {
                 symbol: param.into(),
-                default_value: None,
+                has_default: false,
                 arg_type: ArgumentType::VARARG,
                 annotation: arg.annotation.clone(),
             });
@@ -701,7 +693,7 @@ impl PythonArchBuilder {
             session.st_mut()[param].is_parameter = true;
             session.st_mut()[function_key].args.push(Argument {
                 symbol: param.into(),
-                default_value: arg.default.as_ref().map(|_default| Evaluation::new_none()),
+                has_default: arg.default.is_some(),
                 arg_type: ArgumentType::KWORD_ONLY,
                 annotation: arg.parameter.annotation.clone(),
             });
@@ -711,7 +703,7 @@ impl PythonArchBuilder {
             session.st_mut()[param].is_parameter = true;
             session.st_mut()[function_key].args.push(Argument {
                 symbol: param.into(),
-                default_value: None,
+                has_default: false,
                 arg_type: ArgumentType::KWARG,
                 annotation: arg.annotation.clone(),
             });

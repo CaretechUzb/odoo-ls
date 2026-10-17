@@ -1596,7 +1596,7 @@ impl Evaluation {
         for (index, arg) in function.args.iter().enumerate() {
             match arg.arg_type {
                 ArgumentType::POS_ONLY => {
-                    if arg.default_value.is_none() {
+                    if !arg.has_default {
                         number_pos_arg += 1;
                         if let Some(arg_symbol) = arg.symbol.upgrade(session.st()) {
                             let func_arg_name = session.st()[arg_symbol].name.to_string();
@@ -1605,7 +1605,7 @@ impl Evaluation {
                     }
                 },
                 ArgumentType::ARG => {
-                    if arg.default_value.is_none() {
+                    if !arg.has_default {
                         number_pos_arg += 1;
                     }
                 }
@@ -1723,7 +1723,7 @@ impl Evaluation {
         }
         let mut kword_only_arg_missing = vec![]; // missing kword_only args without default value
         for kword_only_arg in kword_only_args.iter() {
-            if kword_only_arg.default_value.is_none() {
+            if !kword_only_arg.has_default {
                 let name = session.st().name(kword_only_arg.symbol.upgrade(session.st()).unwrap()).clone();
                 kword_only_arg_missing.push(name);
             }

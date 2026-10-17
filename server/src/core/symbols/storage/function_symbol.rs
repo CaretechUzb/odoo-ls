@@ -24,7 +24,8 @@ pub enum ArgumentType {
 pub struct Argument {
     pub symbol: Wk<VariableKey>,
     //other informations about arg
-    pub default_value: Option<Evaluation>,
+    /// Whether the parameter declares a default value (the value itself is never evaluated).
+    pub has_default: bool,
     pub arg_type: ArgumentType,
     pub annotation: Option<Box<Expr>>,
 }
