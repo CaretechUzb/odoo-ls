@@ -43,17 +43,3 @@
 **Context:** Measure first, since the gain is unknown. Also consider `Yarn::copy(name)` instead of `oyarn!("{}", name)`.
 
 **Depends on / blocked by:** None.
-
-### `CsvValidator` early return
-
-**What:** Make the `CsvValidator` early return set the file's validation status.
-
-**Why:** When the model has no main symbol, the early return still leaves the file's validation status IN_PROGRESS. This predates the text-drop work.
-
-**Pros:** The file no longer looks as if it were still in validation.
-
-**Cons:** None known.
-
-**Context:** Found while dropping the XML/CSV/JS texts.
-
-**Depends on / blocked by:** None.

@@ -80,13 +80,12 @@ impl CsvValidator {
             self.finalize_validation(session, csv_symbol, &file_info, diagnostics);
             return;
         };
-        let model_main_class_sym = {
-            let model_ref = model.borrow();
-            let mut model_main_sym = model_ref.get_main_symbols(session, Some(csv_module));
-            let Some(model_main_sym) = model_main_sym.find_map(|s| s.as_class_key()) else {
-                return;
-            };
-            model_main_sym
+        let model_main_class_sym = model.borrow()
+            .get_main_symbols(session, Some(csv_module))
+            .find_map(|s| s.as_class_key());
+        let Some(model_main_class_sym) = model_main_class_sym else {
+            self.finalize_validation(session, csv_symbol, &file_info, diagnostics);
+            return;
         };
         if rdr.has_headers() && let Ok(header) = rdr.headers() {
             let mut header_is_xml = vec![false; header.len()];
