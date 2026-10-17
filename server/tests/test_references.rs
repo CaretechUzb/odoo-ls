@@ -209,6 +209,23 @@ fn python_files(dir: &Path, result: &mut Vec<String>) {
     }
 }
 
+const CALL_THROUGH_IMPORT: &str = "call through an imported name";
+const PACKAGE_INIT: &str = "hit in a package __init__.py";
+
+/// The only hits the index may add to the legacy scan (1-based line and column, path relative
+/// to the test addons): every legacy hit must be in the index, and every hit of the index that
+/// legacy does not report must be one of these.
+/// - CALL edges follow imports: in `from x import f; f()`, the call `f()` is a use of `f`, where
+///   the legacy scan only reports the import line.
+/// - Legacy reports a hit in a package's `__init__.py` with the package directory as uri and an
+///   empty range; the index reports it at its position in the `__init__.py`.
+///
+/// In the Odoo sources (outside the test addons), whose positions change between Odoo versions,
+/// the second class is allowed in any `__init__.py`.
+const ALLOWED_INDEX_ADDITIONS: &[(&str, &str, u32, u32)] = &[
+    (CALL_THROUGH_IMPORT, "module_2/models/graph_models.py", 22, 12),
+];
+
 /// Every class, function and module/class-level variable (fields and imported names
 /// included) of module_1 and module_2: references from the graph index equal the legacy scan.
 ///
@@ -216,12 +233,8 @@ fn python_files(dir: &Path, result: &mut Vec<String>) {
 /// dependents of the definition file, so it misses uses elsewhere (non-workspace files such as
 /// Odoo core importing `_` or `Command`; the definition file itself when asked from an
 /// import). The comparison is therefore made file by file: for every file where either path
-/// reports something, the index must equal the legacy scan of that file, except for one
-/// deliberate difference: CALL edges follow imports, so a call through an imported name
-/// (`helper_function(2)` after `from ... import helper_function`) is a use of the function,
-/// where the legacy scan only reports the import line. Legacy hits in a package's
-/// `__init__.py` come back with the package directory as uri and no range; the index reports
-/// the position in the `__init__.py`.
+/// reports something, every hit of the legacy scan of that file must be in the index, and the
+/// index may only add the hits of [`ALLOWED_INDEX_ADDITIONS`].
 #[test]
 fn test_references_index_parity() {
     use odoo_ls_server::core::graph_recorder::{collect_file_symbols, file_symbol_for_path};
@@ -242,6 +255,9 @@ fn test_references_index_parity() {
     let mut mismatches = vec![];
     let (mut wider, mut calls_through_imports, mut package_hits) = (0, 0, 0);
     let mut file_scans: std::collections::HashMap<(String, String), Vec<Loc>> = Default::default();
+    let addons_prefix = format!("{}/", test_addons_path.sanitize());
+    let mut seen_allowed = std::collections::BTreeSet::new();
+    let mut odoo_package_hits = 0;
     for path in files {
         let Some(file) = file_symbol_for_path(&session, &path) else { continue };
         let symbols = collect_file_symbols(session.st(), file);
@@ -312,13 +328,20 @@ fn test_references_index_parity() {
                     if expected.contains(l) {
                         continue;
                     }
+                    // Only the known differences of the index may add hits, each at a listed site.
+                    let rel = scan_path.strip_prefix(&addons_prefix).unwrap_or(&scan_path).to_string();
+                    let site = (rel.as_str(), l.1 + 1, l.2 + 1);
                     let followed_by_call = lines.get(l.3 as usize).and_then(|line| line.get(l.4 as usize..)).is_some_and(|rest| rest.starts_with('('));
-                    if followed_by_call {
-                        calls_through_imports += 1;
-                    } else if legacy_package_hits {
-                        package_hits += 1;
-                    } else {
-                        mismatches.push(format!("{typ} {qualname} {path}:{}:{}: index adds {l:?}", position.line + 1, position.character + 1));
+                    let class = if followed_by_call { Some(CALL_THROUGH_IMPORT) } else if legacy_package_hits { Some(PACKAGE_INIT) } else { None };
+                    let in_test_addons = scan_path.starts_with(&addons_prefix);
+                    match ALLOWED_INDEX_ADDITIONS.iter().find(|(_, file, line, column)| (*file, *line, *column) == site) {
+                        Some(allowed) if Some(allowed.0) == class => {
+                            seen_allowed.insert(*allowed);
+                            if allowed.0 == CALL_THROUGH_IMPORT { calls_through_imports += 1 } else { package_hits += 1 }
+                        },
+                        // Odoo sources: positions depend on the Odoo version, the class is checked
+                        None if !in_test_addons && class == Some(PACKAGE_INIT) && scan_path.ends_with("/__init__.py") => odoo_package_hits += 1,
+                        _ => mismatches.push(format!("{typ} {qualname} {path}:{}:{}: index adds {l:?} ({rel}:{}:{} {class:?})", position.line + 1, position.character + 1, l.1 + 1, l.2 + 1)),
                     }
                 }
             }
@@ -326,9 +349,12 @@ fn test_references_index_parity() {
     }
     assert!(checked > 100, "only {checked} symbols checked");
     assert!(kinds.len() >= 3, "classes, functions and variables are checked: {kinds:?}");
-    assert!(calls_through_imports >= 1, "the call through an import in module_2 is reported");
     assert!(mismatches.is_empty(), "{} differences:\n{}", mismatches.len(), mismatches.join("\n"));
-    println!("parity: {checked} symbols {kinds:?}; {wider} reach files the legacy request does not scan; {calls_through_imports} calls through imports; {package_hits} hits in __init__.py");
+    let missing: Vec<_> = ALLOWED_INDEX_ADDITIONS.iter().filter(|a| !seen_allowed.contains(a)).collect();
+    assert!(missing.is_empty(), "known differences no longer seen, update the list: {missing:?}");
+    assert!(calls_through_imports >= 1, "the call through an import in module_2 is reported");
+    assert!(odoo_package_hits >= 1, "hits in the __init__.py of Odoo packages are reported");
+    println!("parity: {checked} symbols {kinds:?}; {wider} reach files the legacy request does not scan; {calls_through_imports} calls through imports; {package_hits} + {odoo_package_hits} hits in __init__.py");
 }
 
 /// After an edit, a file waiting for validation has stale rows in the index: references and
