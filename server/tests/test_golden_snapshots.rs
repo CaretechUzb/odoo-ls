@@ -90,6 +90,15 @@ const HOVERS: &[(&str, u32, u32, &str)] = &[
     ("module_2/models/base_test_models.py", 5, 18, "module_2 _inherit string"),
     ("module_2/models/base_test_models.py", 10, 25, "super() call"),
     ("module_2/models/base_test_models.py", 13, 15, "module_2 _name string"),
+    // docstrings: fixture function, Odoo classes and methods from non-opened files, env hooks
+    ("module_1/controllers/main.py", 8, 10, "fixture function docstring"),
+    ("module_1/controllers/main.py", 7, 10, "http.route docstring"),
+    ("module_1/controllers/main.py", 5, 28, "http.Controller class docstring"),
+    ("module_1/controllers/main.py", 17, 32, "env['res.partner'] model docstring"),
+    ("module_1/models/env_attr_probe.py", 8, 13, "self.env (hook docstring)"),
+    ("module_1/models/env_attr_probe.py", 9, 17, "env.user property docstring"),
+    ("module_1/models/env_attr_probe.py", 10, 23, "has_group method docstring"),
+    ("module_1/models/env_attr_probe.py", 3, 28, "models.Model class docstring"),
     // manifests
     ("module_1/__manifest__.py", 13, 6, "manifest depends key"),
     ("module_1/__manifest__.py", 3, 7, "manifest name key"),
