@@ -20,8 +20,19 @@ static GLOBAL: TrackingAllocator = TrackingAllocator;
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+/// jemalloc options, read when it starts (`_RJEM_MALLOC_CONF` still overrides them).
+///
+/// One arena: with one per CPU, the ASTs parsed on the worker threads are freed into the
+/// arenas of those threads, where the main thread cannot reuse the space. On the his tree
+/// this cut the peak footprint by about 80 MB at no cost in time.
+#[cfg(all(not(debug_assertions), any(target_os = "linux", target_os = "macos")))]
+#[allow(non_upper_case_globals)]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+pub static malloc_conf: &[u8; 10] = b"narenas:1\0";
+
 fn main() {
-    // Move jemalloc's purging (madivise) off the worker threads
+    // Move jemalloc's purging (madivise) off the worker threads. Linux only: jemalloc has no
+    // background thread on macOS, and the write fails there.
     #[cfg(all(not(debug_assertions), any(target_os = "linux", target_os = "macos")))]
     {
         if let Err(e) = tikv_jemalloc_ctl::background_thread::write(true) {
@@ -64,7 +75,12 @@ fn main() {
         .filename_suffix(format!("{}.log", std::process::id()))
         .build(log_dir)
         .expect("failed to initialize rolling file appender");
-    let (file_writer, _guard) = tracing_appender::non_blocking(file_appender);
+    // The channel to the log writer thread is allocated whole: 128k lines by default, 4 MiB.
+    // Fewer lines, and the logging thread waits when they are all taken instead of losing logs.
+    let (file_writer, _guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
+        .buffered_lines_limit(16_384)
+        .lossy(false)
+        .finish(file_appender);
     let subscriber = FmtSubscriber::builder()
         .with_thread_ids(true)
         .with_file(false)

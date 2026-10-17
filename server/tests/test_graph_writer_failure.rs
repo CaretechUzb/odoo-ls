@@ -1,4 +1,4 @@
-//! A write failure inside the writer thread of the initial build turns the graph index off for
+//! A write failure during the initial build turns the graph index off for
 //! the session: one error is logged, hierarchy requests answer "graph index unavailable" and
 //! references fall back to the legacy scan.
 //!
@@ -77,7 +77,7 @@ fn test_writer_failure_disables_index_once() {
     let path = fixture();
     // Index #0 of the process: an empty index (schema, no rows), copied as the file of index #1,
     // the one the server opens. Read-only in a read-only directory, the file cannot be replaced:
-    // the server opens it, finds it empty, hands it to the writer thread, and the first write fails.
+    // the server opens it and its first write of the initial build fails.
     let graph_dir = dir.path().join("graph");
     std::fs::create_dir(&graph_dir).unwrap();
     {
@@ -96,7 +96,7 @@ fn test_writer_failure_disables_index_once() {
     let mut session = create_init_session(&mut odoo, config);
 
     let reason = session.sync_odoo.graph_unavailable.clone().expect("the index is disabled");
-    assert!(reason.contains("readonly"), "a write of the writer thread failed: {reason}");
+    assert!(reason.contains("readonly"), "a write of the initial build failed: {reason}");
     assert!(session.sync_odoo.graph_index.is_none());
     assert!(session.sync_odoo.graph_recorder.is_none());
 

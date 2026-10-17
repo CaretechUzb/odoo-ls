@@ -205,9 +205,11 @@ impl ExprOrIdent<'_> {
  */
 pub type GetSymbolHookCallable = fn (session: &mut SessionInfo, eval: &EvaluationSymbol, context: Option<&Context>, diagnostics: &mut Vec<Diagnostic>, scope: Option<SymbolKey>) -> Option<EvaluationSymbolPtr>;
 
-#[derive(Debug, Clone)]
+/// A hook resolving the symbol of an evaluation. Only its name is stored, the function comes
+/// from it (`GetSymbolHook::callable`): a function pointer would make every `Evaluation` 72
+/// bytes instead of 64.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GetSymbolHook {
-    pub callable: GetSymbolHookCallable,
     pub name: HookName,
 }
 
@@ -226,11 +228,6 @@ pub enum HookName {
 }
 
 
-impl PartialEq for GetSymbolHook {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-    }
-}
 
 
 #[derive(Debug, Clone)]
@@ -1318,7 +1315,7 @@ impl Evaluation {
                                 let old_range = context.remove(ContextKey::Range);
                                 context.insert(ContextKey::Range, ContextValue::RANGE(sub.slice.range()));
                                 context.insert(ContextKey::IsInValidation, ContextValue::BOOLEAN(is_in_validation));
-                                let hook_result = (hook.callable)(session, &get_item_eval.symbol, Some(context), &mut diagnostics, Some(parent));
+                                let hook_result = (hook.callable())(session, &get_item_eval.symbol, Some(context), &mut diagnostics, Some(parent));
                                 if let Some(hook_result) = hook_result {
                                     match hook_result {
                                         EvaluationSymbolPtr::WEAK(ref weak) => {
@@ -2198,7 +2195,7 @@ impl EvaluationSymbol {
     pub fn get_symbol(&self, session: &mut SessionInfo, context: Option<&Context>, diagnostics: &mut Vec<Diagnostic>, file_symbol: Option<SymbolKey>) -> EvaluationSymbolPtr {
         let mut custom_eval = None;
         if let Some(hook) = self.get_symbol_hook.as_ref() {
-            custom_eval = (hook.callable)(session, self, context, diagnostics, file_symbol);
+            custom_eval = (hook.callable())(session, self, context, diagnostics, file_symbol);
         }
         custom_eval.as_ref().unwrap_or(&self.sym).clone()
     }

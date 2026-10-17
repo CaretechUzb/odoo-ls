@@ -427,7 +427,9 @@ impl FileInfoAst {
 /// encoding exactly as the text would, without reading the file again.
 #[derive(Debug)]
 struct LineTable {
-    index: LineIndex,
+    /// `LineIndex::line_starts` of the text, exactly sized: the `Vec` of a `LineIndex` is grown
+    /// by pushes and keeps up to twice the room it needs.
+    line_starts: Box<[TextSize]>,
     text_len: TextSize,
     /// The non-ASCII characters, as runs of consecutive characters of the same widths, sorted.
     /// Empty for an ASCII text.
@@ -460,7 +462,7 @@ impl WideRun {
 
 impl LineTable {
     fn new(text_document: &TextDocument) -> Self {
-        let index = text_document.index().clone();
+        let index = text_document.index();
         let text = text_document.contents();
         let mut wide_runs: Vec<WideRun> = vec![];
         if !index.is_ascii() {
@@ -474,7 +476,15 @@ impl LineTable {
                 }
             }
         }
-        Self { index, text_len: TextSize::of(text), wide_runs: wide_runs.into_boxed_slice() }
+        Self { line_starts: index.line_starts().into(), text_len: TextSize::of(text), wide_runs: wide_runs.into_boxed_slice() }
+    }
+
+    /// Zero-indexed line holding `offset`, as `LineIndex::line_index`.
+    fn line_index(&self, offset: TextSize) -> usize {
+        match self.line_starts.binary_search(&offset) {
+            Ok(row) => row,
+            Err(next_row) => next_row - 1,
+        }
     }
 
     /// Runs on the line `[line_start, line_end)`.
@@ -487,8 +497,8 @@ impl LineTable {
     /// Same as [`offset_to_position_with_line_index`] on the dropped text.
     fn offset_to_position(&self, offset: u32, encoding: PositionEncoding) -> Position {
         let mut offset = TextSize::new(offset).min(self.text_len);
-        let row = self.index.line_index(offset).to_zero_indexed();
-        let line_start = self.index.line_starts()[row];
+        let row = self.line_index(offset);
+        let line_start = self.line_starts[row];
         let runs = self.runs_of_line(line_start, offset);
         // An offset inside a character is the start of that character (`floor_char_boundary`).
         if let Some(run) = runs.last() && offset.to_u32() < run.end() {
@@ -509,7 +519,7 @@ impl LineTable {
     /// a column past the end of the line stops after its line end, a line past the end of the
     /// text is the end of the text).
     fn position_to_offset(&self, line: u32, character: u32, encoding: PositionEncoding) -> usize {
-        let starts = self.index.line_starts();
+        let starts = &self.line_starts;
         let line = line as usize;
         if line >= starts.len() {
             return self.text_len.to_usize();
@@ -542,13 +552,13 @@ impl LineTable {
 
     /// Heap bytes held by the table, for the build logs.
     fn heap_size(&self) -> usize {
-        std::mem::size_of_val(self.index.line_starts()) + std::mem::size_of_val(&*self.wide_runs)
+        std::mem::size_of_val(&*self.line_starts) + std::mem::size_of_val(&*self.wide_runs)
     }
 
     /// Same as `LineIndex::line_end_exclusive` of the line before the one holding `offset`.
     fn prev_line_end(&self, offset: TextSize) -> TextSize {
-        let row = self.index.line_index(offset).to_zero_indexed().saturating_sub(1);
-        match self.index.line_starts().get(row + 1) {
+        let row = self.line_index(offset).saturating_sub(1);
+        match self.line_starts.get(row + 1) {
             Some(next_line_start) => *next_line_start - TextSize::new(1),
             None => self.text_len,
         }

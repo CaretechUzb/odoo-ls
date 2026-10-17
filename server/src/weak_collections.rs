@@ -1,10 +1,88 @@
 use std::{cell::RefCell, collections::{hash_map}, hash::Hash, vec::IntoIter};
 
+use thin_vec::ThinVec;
+
 use crate::{core::symbols::symbol_keys::KeyValidator, utils::{HashMap, HashSet}};
+
+/// Keys held in a list searched linearly, up to this many; a hash set above.
+const SMALL_SET: usize = 16;
+
+/// The keys of a [`WeakSet`].
+///
+/// Most sets hold a few keys (the dependencies of a file, the declarations of an xml id): a
+/// `ThinVec` is a pointer with no heap when empty and 16 bytes of header otherwise, where a
+/// `HashSet` takes 32 bytes inline and a table of 4 buckets from the first key.
+#[derive(Debug, Clone)]
+enum Keys<K: Eq + Hash + Copy> {
+    Small(ThinVec<K>),
+    Large(Box<HashSet<K>>),
+}
+
+impl<K: Eq + Hash + Copy> Keys<K> {
+    fn insert(&mut self, key: K) -> bool {
+        match self {
+            Keys::Small(keys) => {
+                if keys.contains(&key) {
+                    return false;
+                }
+                if keys.len() < SMALL_SET {
+                    keys.push(key);
+                } else {
+                    let mut set: HashSet<K> = keys.iter().copied().collect();
+                    set.insert(key);
+                    *self = Keys::Large(Box::new(set));
+                }
+                true
+            },
+            Keys::Large(set) => set.insert(key),
+        }
+    }
+
+    fn contains(&self, key: &K) -> bool {
+        match self {
+            Keys::Small(keys) => keys.contains(key),
+            Keys::Large(set) => set.contains(key),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Keys::Small(keys) => keys.is_empty(),
+            Keys::Large(set) => set.is_empty(),
+        }
+    }
+
+    fn remove(&mut self, key: &K) {
+        match self {
+            Keys::Small(keys) => keys.retain(|k| k != key),
+            Keys::Large(set) => { set.remove(key); },
+        }
+    }
+
+    fn retain(&mut self, mut f: impl FnMut(&K) -> bool) {
+        match self {
+            Keys::Small(keys) => keys.retain(|k| f(k)),
+            Keys::Large(set) => set.retain(|k| f(k)),
+        }
+    }
+
+    fn to_vec(&self) -> Vec<K> {
+        match self {
+            Keys::Small(keys) => keys.to_vec(),
+            Keys::Large(set) => set.iter().copied().collect(),
+        }
+    }
+
+    fn take(&mut self) -> Vec<K> {
+        let keys = self.to_vec();
+        *self = Keys::Small(ThinVec::new());
+        keys
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct WeakSet<K: Eq + Hash + Copy> {
-    set: RefCell<HashSet<K>>,
+    set: RefCell<Keys<K>>,
 }
 
 impl<K: Eq + Hash + Copy> Default for WeakSet<K> {
@@ -16,7 +94,7 @@ impl<K: Eq + Hash + Copy> Default for WeakSet<K> {
 impl<K: Eq + Hash + Copy> WeakSet<K> {
     pub fn new() -> Self {
         Self {
-            set: RefCell::new(HashSet::default()),
+            set: RefCell::new(Keys::Small(ThinVec::new())),
         }
     }
 
@@ -44,8 +122,7 @@ impl<K: Eq + Hash + Copy> WeakSet<K> {
     pub fn iter_valid(&self, table: &impl KeyValidator<K>) -> IntoIter<K> {
         let mut set = self.set.borrow_mut();
         set.retain(|k| table.is_key_valid(*k));
-        let snapshot: Vec<_> = set.iter().copied().collect();
-        snapshot.into_iter()
+        set.to_vec().into_iter()
     }
 
     pub fn retain_valid(&mut self, table: &impl KeyValidator<K>, f: impl Fn(&K) -> bool) {
@@ -53,9 +130,8 @@ impl<K: Eq + Hash + Copy> WeakSet<K> {
     }
 
     pub fn drain_valid(&mut self, table: &impl KeyValidator<K>) -> IntoIter<K> {
-        let valid: Vec<K> = self.set.get_mut().drain()
-            .filter(|k| table.is_key_valid(*k))
-            .collect();
+        let mut valid = self.set.get_mut().take();
+        valid.retain(|k| table.is_key_valid(*k));
         valid.into_iter()
     }
 }
