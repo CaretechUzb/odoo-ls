@@ -99,6 +99,9 @@ const HOVERS: &[(&str, u32, u32, &str)] = &[
     ("module_1/models/env_attr_probe.py", 9, 17, "env.user property docstring"),
     ("module_1/models/env_attr_probe.py", 10, 23, "has_group method docstring"),
     ("module_1/models/env_attr_probe.py", 3, 28, "models.Model class docstring"),
+    ("module_1/models/env_attr_probe.py", 17, 18, "env.uid (static hook docstring)"),
+    ("module_1/models/env_attr_probe.py", 18, 19, "env.context (static hook docstring)"),
+    ("module_1/models/env_attr_probe.py", 19, 18, "env.su (static hook docstring)"),
     // manifests
     ("module_1/__manifest__.py", 13, 6, "manifest depends key"),
     ("module_1/__manifest__.py", 3, 7, "manifest name key"),
