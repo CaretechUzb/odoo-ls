@@ -187,7 +187,10 @@ impl CliBackend {
 
         let mut server = SyncOdoo::new();
         let (s, r) = crossbeam_channel::unbounded();
-        let mut session = SessionInfo::new_from_custom_channel(s.clone(), r.clone(), None, &mut server);
+        // No client answers in CLI mode: a request gets "Server disconnected" at once instead
+        // of taking an event off the output channel.
+        let (_, no_responses) = crossbeam_channel::unbounded();
+        let mut session = SessionInfo::new_from_custom_channel(s.clone(), no_responses, None, &mut server);
         session.sync_odoo.load_odoo_addons = false;
 
         // Add workspace folders once
@@ -213,58 +216,98 @@ impl CliBackend {
         };
         self.reconcile_args_and_config_file(&mut config);
 
-        SyncOdoo::init(&mut session, config);
-
+        // Events are written while the build runs: queued until `init` returns, every
+        // diagnostic of the tree would stay in memory at once.
         let output_path = self.cli.output.clone().unwrap_or(S!("output.json"));
-        let file = File::create(output_path.clone());
-        let mut events = vec![];
-        if let Ok(mut file) = file {
-            while !r.is_empty() {
-                let msg = r.recv();
-                if let Ok(msg) = msg {
-                    match msg {
-                        Message::Notification(n) => {
-                            match n.method.as_str() {
-                                LogMessage::METHOD => {
-                                    let params: LogMessageParams = serde_json::from_value(n.params).unwrap();
-                                    events.push(json!({
-                                        "type": "log",
-                                        "severity": params.typ,
-                                        "message": params.message
-                                    }))
-                                },
-                                PublishDiagnostics::METHOD => {
-                                    let mut diagnostics = vec![];
-                                    let params: PublishDiagnosticsParams = serde_json::from_value(n.params).unwrap();
-                                    for diagnostic in params.diagnostics.iter() {
-                                        diagnostics.push(serde_json::to_value(diagnostic).unwrap());
-                                    }
-                                    events.push(json!({
-                                        "type": "diagnostic",
-                                        "uri": params.uri,
-                                        "version": params.version,
-                                        "diagnostics": diagnostics
-                                    }));
-                                },
-                                _ => {error!("not handled method: {}", n.method)}
-                            }
-                        },
-                        Message::Request(_) => {
-                            error!("No request should be sent to client as we are in cli mode.");
-                        },
-                        Message::Response(_) => {
-                            error!("No response should be sent to client as we are in cli mode.");
-                        }
-                    }
-                } else {
-                    error!("Unable to recv a message");
-                }
-            }
-            let json_string = json!({"events": events});
-            if let Err(e) = file.write_all(serde_json::to_string_pretty(&json_string).unwrap().as_bytes()) {
-                error!("Unable to write to {}: {}", output_path, e)
-            }
+        let writer = std::thread::spawn(move || write_events(r, &output_path));
+        SyncOdoo::init(&mut session, config);
+        if s.send(Message::Notification(lsp_server::Notification { method: S!(END_OF_EVENTS), params: serde_json::Value::Null })).is_ok() {
+            let _ = writer.join();
         }
+    }
+}
+
+/// Notification sent by `run` once the build is done: the events before it are the output.
+const END_OF_EVENTS: &str = "$/odoo/endOfEvents";
+
+/// The output event of a message, or None for a message the CLI does not report.
+fn event_of(msg: Message) -> Option<serde_json::Value> {
+    match msg {
+        Message::Notification(n) => {
+            match n.method.as_str() {
+                LogMessage::METHOD => {
+                    let params: LogMessageParams = serde_json::from_value(n.params).unwrap();
+                    Some(json!({
+                        "type": "log",
+                        "severity": params.typ,
+                        "message": params.message
+                    }))
+                },
+                PublishDiagnostics::METHOD => {
+                    let mut diagnostics = vec![];
+                    let params: PublishDiagnosticsParams = serde_json::from_value(n.params).unwrap();
+                    for diagnostic in params.diagnostics.iter() {
+                        diagnostics.push(serde_json::to_value(diagnostic).unwrap());
+                    }
+                    Some(json!({
+                        "type": "diagnostic",
+                        "uri": params.uri,
+                        "version": params.version,
+                        "diagnostics": diagnostics
+                    }))
+                },
+                _ => {error!("not handled method: {}", n.method); None}
+            }
+        },
+        Message::Request(_) => {
+            error!("No request should be sent to client as we are in cli mode.");
+            None
+        },
+        Message::Response(_) => {
+            error!("No response should be sent to client as we are in cli mode.");
+            None
+        }
+    }
+}
+
+/// Write `{"events": [...]}` to `output_path` as the messages arrive, until END_OF_EVENTS.
+/// The text is the one `serde_json::to_string_pretty` gives for the whole object.
+fn write_events(r: crossbeam_channel::Receiver<Message>, output_path: &str) {
+    let mut file = match File::create(output_path) {
+        Ok(file) => Some(std::io::BufWriter::new(file)),
+        Err(e) => {
+            error!("Unable to create {}: {}", output_path, e);
+            None
+        }
+    };
+    let mut count = 0;
+    let mut write_err = None;
+    while let Ok(msg) = r.recv() {
+        if matches!(&msg, Message::Notification(n) if n.method == END_OF_EVENTS) {
+            break;
+        }
+        let Some(event) = event_of(msg) else {
+            continue;
+        };
+        let Some(out) = file.as_mut() else {
+            continue;
+        };
+        let head = if count == 0 { "{\n  \"events\": [\n    " } else { ",\n    " };
+        let body = serde_json::to_string_pretty(&event).unwrap().replace('\n', "\n    ");
+        if let Err(e) = out.write_all(head.as_bytes()).and_then(|_| out.write_all(body.as_bytes())) {
+            write_err = Some(e);
+            file = None;
+        }
+        count += 1;
+    }
+    if let Some(mut out) = file {
+        let tail = if count == 0 { "{\n  \"events\": []\n}" } else { "\n  ]\n}" };
+        if let Err(e) = out.write_all(tail.as_bytes()).and_then(|_| out.flush()) {
+            write_err = Some(e);
+        }
+    }
+    if let Some(e) = write_err {
+        error!("Unable to write to {}: {}", output_path, e)
     }
 }
 
