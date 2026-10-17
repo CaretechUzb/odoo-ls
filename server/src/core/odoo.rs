@@ -2167,6 +2167,9 @@ impl Odoo {
         let path_exists = !FileMgr::is_untitled(&path) && Path::new(&path).exists();
         if !path_exists {
             SyncOdoo::unload_path(session, Path::new(&path));
+            // Gone from disk: its graph nodes and edges go with it, as on a didDelete (which
+            // skipped it while it was open).
+            graph_recorder::on_path_removed(session, &path);
             FileMgr::delete_file_path(session, &path);
         } else if session.sync_odoo.is_external_path(Path::new(&path)) {
             FileMgr::delete_file_path(session, &path);

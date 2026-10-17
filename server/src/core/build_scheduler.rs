@@ -161,7 +161,11 @@ impl BuildScheduler {
             let in_addons = session.sync_odoo.get_main_entry_tree(parent) == (&["odoo", "addons"], &[]);
             let new_symbol = match SymbolTable::create_from_path(session, Path::new(&path), parent, in_addons) {
                 Ok(symbol) => symbol,
-                Err(CreateError::NothingOnDisk) => continue,
+                Err(CreateError::NothingOnDisk) => {
+                    // unloaded to be reloaded, but gone from disk: drop its graph rows too
+                    graph_recorder::on_path_removed(session, &path);
+                    continue
+                },
                 Err(CreateError::Existing(existing)) => panic!(
                    "reload path {path} still occupied by {existing:?}: unload failed to unlink it" 
                 ),
