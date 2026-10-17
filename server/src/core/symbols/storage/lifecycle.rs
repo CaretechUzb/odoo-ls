@@ -189,9 +189,9 @@ impl SymbolTable {
         parent: XmlFieldParent,
         field_name: &str,
         range: TextRange,
-        text: Option<String>,
+        text: Option<OYarn>,
         text_range: Option<TextRange>,
-        ref_key: Option<(String, TextRange)>,
+        ref_key: Option<(OYarn, TextRange)>,
     ) -> Result<XmlFieldKey, NameTakenError> {
         self.check_xml_field_name_vacant(parent, field_name)?;
         let is_external = self.is_external(parent.into());

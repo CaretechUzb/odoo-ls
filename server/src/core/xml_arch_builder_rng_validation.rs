@@ -269,7 +269,7 @@ impl XmlArchBuilder {
         };
 
         let has_type = node.attribute("type").is_some();
-        let ref_key = node.attribute_node("ref").map(|rk| (rk.value().to_string(), utils::range_to_text_range(rk.range())));
+        let ref_key = node.attribute_node("ref").map(|rk| (oyarn!("{}", rk.value()), utils::range_to_text_range(rk.range())));
         let has_ref = ref_key.is_some();
         let has_eval = node.attribute("eval").is_some();
         let has_search = node.attribute("search").is_some();
@@ -387,7 +387,7 @@ impl XmlArchBuilder {
         let mut text_range = None;
         for child in node.children() {
             if child.is_text() {
-                text = child.text().map(|s| s.to_string());
+                text = child.text().map(|s| oyarn!("{}", s));
                 text_range = Some(child.range());
             }
         }
@@ -845,7 +845,7 @@ impl XmlArchBuilder {
                             }
                             sym.fields().iter().find_map(|(name, &field_key)| {
                                 if name == "model" {
-                                    st[field_key].text.as_ref().map(|t| oyarn!("{}", t))
+                                    st[field_key].text.clone()
                                 } else {
                                     None
                                 }
