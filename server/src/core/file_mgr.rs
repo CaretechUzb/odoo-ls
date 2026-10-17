@@ -934,15 +934,51 @@ impl FileInfo {
         file_info.borrow().file_info_ast.borrow().text_document.as_ref().map(|td| td.contents().to_string())
     }
 
-    /// Read the dropped text of this file again from disk, without parsing it. `text_hash` stays
-    /// the hash of the content the file was built from (only [`Self::prepare_ast`], which parses
-    /// the new content, moves it): a content that changed on disk has the file reloaded by the
-    /// next rebuild, which then sees the change. Like a re-parsed AST, the text is bounded by
-    /// [`FileMgr::keep_reparsed_ast`].
+    /// [`Self::text_contents`] for a request that scans many files once, like references: a
+    /// dropped text read again from disk is not kept, so the scan neither evicts the texts and
+    /// ASTs kept by [`FileMgr::keep_reparsed_ast`] nor builds a line index it throws away. The
+    /// [`LineTable`] of the dropped text still converts the offsets found in it. A text that
+    /// changed on disk since the file was built, or a file without a line table, is kept as by
+    /// [`Self::text_contents`]: the line table would not match it.
+    pub fn scan_text(file_info: &Rc<RefCell<FileInfo>>, session: &mut SessionInfo) -> Option<String> {
+        let (path, built_hash) = {
+            let file_info_ref = file_info.borrow();
+            let fia = file_info_ref.file_info_ast.borrow();
+            if let Some(text_document) = fia.text_document.as_ref() {
+                return Some(text_document.contents().to_string());
+            }
+            if fia.line_table.is_none() {
+                drop(fia);
+                drop(file_info_ref);
+                return Self::text_contents(file_info, session);
+            }
+            (file_info_ref.uri.clone(), fia.text_hash)
+        };
+        let content = fs::read_to_string(&path).ok()?;
+        if hash_text(&content) != built_hash {
+            file_info.borrow_mut().keep_reread_text(session, content.clone());
+            return Some(content);
+        }
+        TEXT_REREADS.fetch_add(1, Ordering::Relaxed);
+        Some(content)
+    }
+
+    /// Read the dropped text of this file again from disk, without parsing it, see
+    /// [`Self::keep_reread_text`].
     fn reread_text(&mut self, session: &mut SessionInfo) -> bool {
         let Ok(content) = fs::read_to_string(&self.uri) else {
             return false;
         };
+        self.keep_reread_text(session, content);
+        true
+    }
+
+    /// Keep `content`, the dropped text of this file read again from disk. `text_hash` stays the
+    /// hash of the content the file was built from (only [`Self::prepare_ast`], which parses the
+    /// new content, moves it): a content that changed on disk has the file reloaded by the next
+    /// rebuild, which then sees the change. Like a re-parsed AST, the text is bounded by
+    /// [`FileMgr::keep_reparsed_ast`].
+    fn keep_reread_text(&mut self, session: &mut SessionInfo, content: String) {
         let text_document = TextDocument::new(content, self.version.unwrap_or(-1));
         let hash = hash_text_document(&text_document);
         let (built_hash, is_python) = {
@@ -961,7 +997,6 @@ impl FileInfo {
         if !self.opened && !session.sync_odoo.config.file_cache() {
             session.sync_odoo.get_file_mgr().borrow().keep_reparsed_ast(&self.uri);
         }
-        true
     }
 
     /// The file changed on disk since it was built, and no event told us yet. Its symbols (node
@@ -1894,8 +1929,14 @@ pub enum PreloadedFile {
 }
 
 pub fn hash_text_document(text: &TextDocument) -> u64 {
+    hash_text(text.contents())
+}
+
+/// [`hash_text_document`] of a text without its [`TextDocument`]: a [`TextDocument`] hashes its
+/// contents only.
+pub fn hash_text(contents: &str) -> u64 {
     let mut hasher = FxHasher::default();
-    text.hash(&mut hasher);
+    contents.hash(&mut hasher);
     hasher.finish()
 }
 
