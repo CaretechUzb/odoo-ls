@@ -55,7 +55,7 @@ fn drop_fixture_asts(session: &SessionInfo) -> bool {
     let files = fixture_files(session);
     assert!(files.len() >= 4, "fixture files not found");
     files.iter().all(|f| {
-        FileMgr::drop_ast(session, f);
+        FileMgr::drop_text(session, f);
         !f.borrow().file_info_ast.borrow().is_built()
     })
 }

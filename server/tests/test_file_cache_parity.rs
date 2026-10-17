@@ -45,7 +45,7 @@ fn collect_answers(file_cache: bool) -> (Vec<String>, Vec<bool>) {
     let mut dropped = vec![];
     let mut before_query = |session: &mut odoo_ls_server::threads::SessionInfo| {
         // A previous query parsed the file again: drop it so that every query starts without AST.
-        FileMgr::drop_ast(session, &file_info);
+        FileMgr::drop_text(session, &file_info);
         dropped.push(!file_info.borrow().file_info_ast.borrow().is_built());
     };
     for &(line, character) in HOVER_AND_DEFINITION {

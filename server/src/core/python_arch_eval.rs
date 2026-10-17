@@ -143,7 +143,7 @@ impl PythonArchEval {
                     if session.sync_odoo.pre_parse_cache().is_some() {
                         // Initial build: validation comes much later and the pre-parser parses
                         // the file again ahead of it. Do not hold the AST until then.
-                        FileMgr::drop_ast(session, &file_info_rc);
+                        FileMgr::drop_text(session, &file_info_rc);
                     } else {
                         // A rebuild validates the file right after: keep its AST for that, among
                         // the few re-parsed ASTs kept (a large rebuild drops the oldest).

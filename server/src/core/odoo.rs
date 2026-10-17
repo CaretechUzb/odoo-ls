@@ -194,8 +194,9 @@ pub struct SyncOdoo {
     pub build_scheduler: BuildScheduler,
     pub state_init: InitState,
     pub must_reload_paths: Vec<(Wk<FileSystemSymbolParent>, String)>, // formerly Weak refs
-    /// Python files whose dropped AST was parsed again from a disk content that is not the one
-    /// their symbols were built from: reloaded by the next rebuild, see `FileInfo::prepare_ast`.
+    /// Files whose dropped AST or text was read again from a disk content that is not the one
+    /// their symbols were built from: reloaded by the next rebuild, see
+    /// `FileInfo::reload_changed_on_disk`.
     pub files_changed_on_disk: Vec<String>,
     pub load_odoo_addons: bool, //indicate if we want to load odoo addons or not
     pub need_rebuild: bool, //if true, the next process_rebuilds will drop everything and rebuild everything
@@ -756,7 +757,7 @@ impl SyncOdoo {
         session.sync_odoo.pre_parse_cache = None;
         drop(pre_parser);
 
-        log_phase_memory(&session.sync_odoo, "module ARCH+ARCH_EVAL built");
+        log_phase_memory(session.sync_odoo, "module ARCH+ARCH_EVAL built");
         // Run deferred subfunction invalidations
         if let Some(mut files) = session.sync_odoo.deferred_subfunc_invalidation.take() {
             while let Some(file) = files.pop_front_valid(session.st()) {
@@ -782,7 +783,7 @@ impl SyncOdoo {
         }
         session.sync_odoo.pre_parse_cache = None;
         drop(pre_parser);
-        log_phase_memory(&session.sync_odoo, "module VALIDATION drained");
+        log_phase_memory(session.sync_odoo, "module VALIDATION drained");
         session.sync_odoo.import_cache = None;
         let modules_count = session.sync_odoo.modules.len();
         reporter.end();
@@ -2161,7 +2162,7 @@ impl Odoo {
             file_info.version = None;
         }
         if !session.sync_odoo.config.file_cache() {
-            // No longer opened: its AST may now be dropped, like the ASTs parsed again on demand.
+            // No longer opened: its text and AST may now be dropped, like those read again on demand.
             session.sync_odoo.get_file_mgr().borrow().keep_reparsed_ast(&path);
         }
         session.sync_odoo.entry_point_mgr.borrow_mut().remove_entries_with_path(&mut session.sync_odoo.symbol_table, &Path::new(&path).to_tree_path().sanitize_cow());

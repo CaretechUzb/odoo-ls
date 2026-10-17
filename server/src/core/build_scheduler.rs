@@ -195,8 +195,9 @@ impl BuildScheduler {
         }
     }
 
-    /// Reload the Python files whose dropped AST was parsed again from a content that changed
-    /// on disk (see `FileInfo::prepare_ast`): their symbols were built from the previous one.
+    /// Reload the files whose dropped AST or text was read again from a content that changed
+    /// on disk (see `FileInfo::reload_changed_on_disk`): their symbols were built from the
+    /// previous one.
     /// Same as `SessionInfo::request_update_file_index`, whose event will not come: the file
     /// info already holds the new content.
     fn reload_files_changed_on_disk(session: &mut SessionInfo) {
@@ -229,7 +230,7 @@ impl BuildScheduler {
                 trace!("remains: {:?} - {:?} - {:?}", bs!(session).rebuild_arch.len(), bs!(session).rebuild_arch_eval.len(), bs!(session).rebuild_validation.len());
             }
             if let Some(phase_mem) = phase_mem.as_mut() {
-                phase_mem.check(&session.sync_odoo, bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
+                phase_mem.check(session.sync_odoo, bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
             }
             let queue_size = bs!(session).rebuild_arch.len() * 3 + bs!(session).rebuild_arch_eval.len() * 2 + bs!(session).rebuild_validation.len();
             if let Some(reporter) = &mut reporter {
@@ -305,7 +306,7 @@ impl BuildScheduler {
             session.send_notification(OdooNotification::RestartNeeded, ());
         }
         if let Some(phase_mem) = phase_mem.as_mut() {
-            phase_mem.check(&session.sync_odoo, bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
+            phase_mem.check(session.sync_odoo, bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
         }
         session.sync_odoo.import_cache = None;
         session.sync_odoo.watched_file_updates = 0;
