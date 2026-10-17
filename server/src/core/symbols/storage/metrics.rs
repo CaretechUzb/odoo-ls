@@ -1,4 +1,4 @@
-use tracing::debug;
+use tracing::{debug, info};
 use crate::core::symbols::SymbolTable;
 
 macro_rules! log_symbol_table {
@@ -17,15 +17,52 @@ pub fn log_slotmap_capacities(symbol_table: &SymbolTable) {
     log_symbol_table!(symbol_table, capacity; roots, disk_dirs, namespaces, python_packages, modules, files, compiled, classes, functions, variables, xml_files, csv_files);
 }
 
-pub fn log_memory_usage() {
-    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-        debug!("===Memory usage===");
-        for line in status.lines() {
-            if line.starts_with("VmRSS:") || line.starts_with("VmPeak:") || line.starts_with("VmHWM:") {
-                debug!("{}", line);
-            }
-        }
+/// Logs jemalloc allocated/resident bytes (info level). No-op where jemalloc is not the allocator.
+#[cfg(all(not(debug_assertions), any(target_os = "linux", target_os = "macos")))]
+pub fn log_memory_usage(label: &str) {
+    use tikv_jemalloc_ctl::{epoch, stats};
+    if epoch::advance().is_err() {
+        return;
     }
+    if let (Ok(allocated), Ok(resident)) = (stats::allocated::read(), stats::resident::read()) {
+        info!("[mem] {}: allocated={:.1} MiB resident={:.1} MiB", label, allocated as f64 / 1048576.0, resident as f64 / 1048576.0);
+    }
+}
+
+#[cfg(not(all(not(debug_assertions), any(target_os = "linux", target_os = "macos"))))]
+pub fn log_memory_usage(_label: &str) {}
+
+/// Logs memory + symbol counts once per initial-build phase (ARCH, ARCH_EVAL, VALIDATION queues
+/// drained). A phase is logged only if its queue held something during the rebuild.
+#[derive(Default)]
+pub struct PhaseMemoryLogger { arch: bool, eval: bool, val: bool, arch_seen: bool, eval_seen: bool, val_seen: bool }
+
+impl PhaseMemoryLogger {
+    /// A logger for a `process_rebuilds` call, or None (nothing to log, nothing to pay): only
+    /// the builds of the initialization are logged, and only when there is something to build.
+    pub fn for_rebuild(initializing: bool, queues_empty: bool) -> Option<Self> {
+        (initializing && !queues_empty).then(Self::default)
+    }
+
+    pub fn check(&mut self, st: &SymbolTable, arch_empty: bool, eval_empty: bool, val_empty: bool) {
+        self.arch_seen |= !arch_empty;
+        self.eval_seen |= !eval_empty;
+        self.val_seen |= !val_empty;
+        if arch_empty && self.arch_seen && !self.arch { self.arch = true; self.log(st, "ARCH drained"); }
+        if arch_empty && eval_empty && self.eval_seen && !self.eval { self.eval = true; self.log(st, "ARCH_EVAL drained"); }
+        if arch_empty && eval_empty && val_empty && self.val_seen && !self.val { self.val = true; self.log(st, "VALIDATION drained"); }
+    }
+    fn log(&self, st: &SymbolTable, label: &str) {
+        log_phase_memory(st, label);
+    }
+}
+
+/// jemalloc stats + symbol counts at info level, labelled.
+pub fn log_phase_memory(st: &SymbolTable, label: &str) {
+    log_memory_usage(label);
+    info!("[mem] {} symbol counts: roots={} namespaces={} packages={} modules={} files={} classes={} functions={} variables={} xml={} csv={}", label,
+        st.roots.len(), st.namespaces.len(), st.python_packages.len(), st.modules.len(), st.files.len(), st.classes.len(), st.functions.len(), st.variables.len(), st.xml_files.len(), st.csv_files.len());
+    info!("[mem] {} dropped ASTs parsed again: {}", label, crate::core::file_mgr::AST_REPARSES.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 pub fn log_is_in_workspace(symbol_table: &SymbolTable) {

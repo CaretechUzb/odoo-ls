@@ -17,7 +17,7 @@ use super::symbol_mgr::{SectionRange, SymbolMgr};
 pub struct ClassSymbol {
     pub name: OYarn,
     pub is_external: bool,
-    pub doc_string: Option<String>,
+    pub doc_string: Option<crate::core::symbols::DocString>,
     pub bases: Vec<Wk<ClassKey>>,
     pub range: TextRange,
     pub body_range: TextRange,

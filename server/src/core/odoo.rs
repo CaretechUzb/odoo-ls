@@ -4,12 +4,15 @@ use crate::core::component_mgr::ComponentMgr;
 use crate::core::diagnostics::{create_diagnostic, DiagnosticCode};
 use crate::core::entry_point::EntryPointType;
 use crate::core::file_mgr::{AstKind, PreloadedFile};
+use crate::core::graph_index::GraphIndex;
+use crate::core::diagnostics_store::{self, DiagnosticsStore};
+use crate::core::graph_recorder::{self, GraphRecorder};
 use crate::core::js_module_scope;
 use crate::core::module_load_order::sort_by_load_order;
 use crate::core::pre_parser::{PreParseCache, PreParser};
 use crate::core::symbols::ModuleSymbol;
 use crate::core::symbols::storage::{FileSystemSymbolParent, JsFileParent, SymbolTable};
-use crate::core::symbols::storage::metrics::{log_slotmap_capacities, log_symbol_counts, log_memory_usage};
+use crate::core::symbols::storage::metrics::{log_slotmap_capacities, log_symbol_counts, log_memory_usage, log_phase_memory};
 use crate::core::symbols::symbol_keys::{BuildableSymbolKey, FileSystemSymbolKey, FunctionKey, ModuleKey, NamespaceKey, SourceFileKey, SymbolKey, Wk, XmlId, XmlTemplateKey};
 use crate::core::symbols::symbol_table_impl::CreateError;
 use crate::core::tsserver_bridge::{TsServerBridge};
@@ -21,6 +24,9 @@ use crate::lsp_types_custom::{ConfigDiagnosticAction, ConfigDiagnosticMessage, C
 use crate::odoo_version::OdooVersion;
 use crate::features::document_symbols::DocumentSymbolFeature;
 use crate::features::references::{ReferenceFeature, ReferenceTarget};
+use crate::features::call_hierarchy::CallHierarchyFeature;
+use crate::features::type_hierarchy::TypeHierarchyFeature;
+use crate::core::file_mgr::FileInfo;
 use crate::features::workspace_symbols::WorkspaceSymbolFeature;
 use crate::features::declaration::DeclarationFeature;
 use crate::features::completion::CompletionFeature;
@@ -188,6 +194,9 @@ pub struct SyncOdoo {
     pub build_scheduler: BuildScheduler,
     pub state_init: InitState,
     pub must_reload_paths: Vec<(Wk<FileSystemSymbolParent>, String)>, // formerly Weak refs
+    /// Python files whose dropped AST was parsed again from a disk content that is not the one
+    /// their symbols were built from: reloaded by the next rebuild, see `FileInfo::prepare_ast`.
+    pub files_changed_on_disk: Vec<String>,
     pub load_odoo_addons: bool, //indicate if we want to load odoo addons or not
     pub need_rebuild: bool, //if true, the next process_rebuilds will drop everything and rebuild everything
     pub import_cache: Option<ImportCache>,
@@ -197,6 +206,11 @@ pub struct SyncOdoo {
     pub symbol_table: SymbolTable,
     pub evaluation_search: Option<ReferenceTarget>, //If set, any evaluation will be check against this value. If evaluation matches, location is kept in evaluation_locations
     pub evaluation_locations: Vec<Location>,
+    pub graph_index: Option<GraphIndex>, // SQLite graph of symbols and uses, see graph_recorder
+    pub graph_recorder: Option<GraphRecorder>,
+    pub graph_unavailable: Option<String>, // why the graph index is off for this session
+    pub graph_dir: Option<PathBuf>, // overrides the graph index directory (tests)
+    pub diagnostics_store: DiagnosticsStore, // diagnostics that left RAM, see diagnostics_store
     pub typeshed_weak_cache: TypeshedWeakReferences, //cache of weak references to important typeshed symbols, to avoid having to look for them in the graph for each evaluation
     pub deferred_subfunc_invalidation: Option<FifoWeakHashSet<SourceFileKey>>, // None = eager (default)
     languages_by_source: WeakMap<SourceFileKey, HashSet<String>>,
@@ -249,6 +263,7 @@ impl SyncOdoo {
             build_scheduler: BuildScheduler::new(),
             state_init: InitState::NOT_READY,
             must_reload_paths: vec![],
+            files_changed_on_disk: vec![],
             load_odoo_addons: true,
             need_rebuild: false,
             import_cache: None,
@@ -258,6 +273,11 @@ impl SyncOdoo {
             symbol_table: SymbolTable::new(),
             evaluation_search: None,
             evaluation_locations: vec![],
+            graph_index: None,
+            graph_recorder: None,
+            graph_unavailable: None,
+            graph_dir: None,
+            diagnostics_store: DiagnosticsStore::default(),
             typeshed_weak_cache: TypeshedWeakReferences::new(),
             languages_by_source: WeakMap::new(),
             language_dependents: WeakSet::new(),
@@ -282,6 +302,7 @@ impl SyncOdoo {
         session.sync_odoo.modules = HashMap::default();
         session.sync_odoo.models = HashMap::default();
         session.sync_odoo.build_scheduler = BuildScheduler::new();
+        session.sync_odoo.files_changed_on_disk.clear();
         session.sync_odoo.state_init = InitState::NOT_READY;
         session.sync_odoo.load_odoo_addons = true;
         session.sync_odoo.need_rebuild = false;
@@ -326,6 +347,7 @@ impl SyncOdoo {
         crate::constants::install_debug_ptr(&session.sync_odoo.symbol_table);
 
         session.sync_odoo.symbol_table.pre_allocate();
+        graph_recorder::on_init(session);
         info!("Initializing odoo");
         info!("Full Config: {:?}", config);
         let start_time = Instant::now();
@@ -432,6 +454,7 @@ impl SyncOdoo {
             session.sync_odoo.state_init = InitState::PYTHON_READY;
             SyncOdoo::build_database(session);
         }
+        graph_recorder::on_init_done(session);
         if let Some(handle) = tsserver_handle {
             match handle.join() {
                 Ok(Some(bridge)) => session.sync_odoo.tsserver_bridge = Some(bridge),
@@ -535,7 +558,7 @@ impl SyncOdoo {
         if DEBUG_SYMBOL_TABLE_METRICS {
             log_symbol_counts(session.st());
             log_slotmap_capacities(session.st());
-            log_memory_usage();
+            log_memory_usage("build_database end");
         }
     }
 
@@ -727,11 +750,13 @@ impl SyncOdoo {
 
             // Update pre_parser on module build progress
             pre_parser.on_module_built(i);
+            if i % 100 == 0 { log_memory_usage(&format!("modules built: {}/{}", i, n_modules)); }
         }
         // Module-build phase done: tear down the pool (joins workers) and drop the cache.
         session.sync_odoo.pre_parse_cache = None;
         drop(pre_parser);
 
+        log_phase_memory(session.st(), "module ARCH+ARCH_EVAL built");
         // Run deferred subfunction invalidations
         if let Some(mut files) = session.sync_odoo.deferred_subfunc_invalidation.take() {
             while let Some(file) = files.pop_front_valid(session.st()) {
@@ -740,12 +765,24 @@ impl SyncOdoo {
         }
         // Drain validation queue
         let total_items = BuildScheduler::validation_queue_len(session) as u32;
+        // Without file_cache, the ASTs were dropped after ARCH_EVAL: parse them again ahead of validation.
+        let pre_parser = (!session.sync_odoo.config.file_cache()).then(|| PreParser::for_validation(session));
+        session.sync_odoo.pre_parse_cache = pre_parser.as_ref().map(|pre_parser| pre_parser.cache.clone());
         while BuildScheduler::build_one(session, &main_entry, true) {
-            if session.sync_odoo.terminate_rebuild.load(Ordering::Relaxed) { return; }
+            if session.sync_odoo.terminate_rebuild.load(Ordering::Relaxed) {
+                session.sync_odoo.pre_parse_cache = None;
+                return;
+            }
             let items_left = BuildScheduler::validation_queue_len(session) as u32;
+            if let Some(pre_parser) = &pre_parser {
+                pre_parser.on_validation_progress(session);
+            }
             // report progress (total_items > 0, otherwise loop wouldn't run)
             reporter.report_progress(BUILD_PHASE_WEIGHT + (total_items - items_left) * (VALIDATION_PHASE_WEIGHT) / total_items);
         }
+        session.sync_odoo.pre_parse_cache = None;
+        drop(pre_parser);
+        log_phase_memory(session.st(), "module VALIDATION drained");
         session.sync_odoo.import_cache = None;
         let modules_count = session.sync_odoo.modules.len();
         reporter.end();
@@ -852,6 +889,7 @@ impl SyncOdoo {
     }
 
     pub fn unload_path(session: &mut SessionInfo, path: &Path) {
+        graph_recorder::on_unload(session);
         // file/dir might no longer exist in file system, we can't stat it
         let ep_mgr = session.sync_odoo.entry_point_mgr.clone();
         for entry in ep_mgr.borrow().iter_all() {
@@ -1751,6 +1789,52 @@ impl Odoo {
         Ok(None)
     }
 
+    /// Python file symbol and file info at a text document position, for the hierarchy requests.
+    fn python_file_at(session: &mut SessionInfo, position: &TextDocumentPositionParams) -> Option<(SourceFileKey, Rc<RefCell<FileInfo>>)> {
+        if session.sync_odoo.state_init == InitState::NOT_READY {
+            return None;
+        }
+        let uri = position.text_document.uri.to_string();
+        if ![".py", ".pyi"].iter().any(|ext| uri.ends_with(ext)) {
+            return None;
+        }
+        let path = FileMgr::uri2pathname(uri.as_str());
+        let file_symbol = SyncOdoo::get_symbol_of_opened_file(session, Path::new(&path))?;
+        let file_info = session.sync_odoo.get_file_mgr().borrow_mut().get_file_info(&path)?;
+        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+            file_info.borrow_mut().prepare_ast(session);
+        }
+        Some((file_symbol, file_info))
+    }
+
+    pub fn handle_prepare_call_hierarchy(session: &mut SessionInfo, params: CallHierarchyPrepareParams) -> Result<Option<Vec<CallHierarchyItem>>, ResponseError> {
+        let position = params.text_document_position_params;
+        let Some((file_symbol, file_info)) = Odoo::python_file_at(session, &position) else { return Ok(None) };
+        CallHierarchyFeature::prepare(session, file_symbol, &file_info, position.position.line, position.position.character)
+    }
+
+    pub fn handle_incoming_calls(session: &mut SessionInfo, params: CallHierarchyIncomingCallsParams) -> Result<Option<Vec<CallHierarchyIncomingCall>>, ResponseError> {
+        CallHierarchyFeature::incoming_calls(session, &params.item)
+    }
+
+    pub fn handle_outgoing_calls(session: &mut SessionInfo, params: CallHierarchyOutgoingCallsParams) -> Result<Option<Vec<CallHierarchyOutgoingCall>>, ResponseError> {
+        CallHierarchyFeature::outgoing_calls(session, &params.item)
+    }
+
+    pub fn handle_prepare_type_hierarchy(session: &mut SessionInfo, params: TypeHierarchyPrepareParams) -> Result<Option<Vec<TypeHierarchyItem>>, ResponseError> {
+        let position = params.text_document_position_params;
+        let Some((file_symbol, file_info)) = Odoo::python_file_at(session, &position) else { return Ok(None) };
+        TypeHierarchyFeature::prepare(session, file_symbol, &file_info, position.position.line, position.position.character)
+    }
+
+    pub fn handle_supertypes(session: &mut SessionInfo, params: TypeHierarchySupertypesParams) -> Result<Option<Vec<TypeHierarchyItem>>, ResponseError> {
+        TypeHierarchyFeature::supertypes(session, &params.item)
+    }
+
+    pub fn handle_subtypes(session: &mut SessionInfo, params: TypeHierarchySubtypesParams) -> Result<Option<Vec<TypeHierarchyItem>>, ResponseError> {
+        TypeHierarchyFeature::subtypes(session, &params.item)
+    }
+
     pub fn handle_autocomplete(session: &mut SessionInfo ,params: CompletionParams) -> Result<Option<CompletionResponse>, ResponseError> {
         if session.sync_odoo.state_init == InitState::NOT_READY {
             return Ok(None);
@@ -2076,10 +2160,17 @@ impl Odoo {
             file_info.opened = false;
             file_info.version = None;
         }
+        if !session.sync_odoo.config.file_cache() {
+            // No longer opened: its AST may now be dropped, like the ASTs parsed again on demand.
+            session.sync_odoo.get_file_mgr().borrow().keep_reparsed_ast(&path);
+        }
         session.sync_odoo.entry_point_mgr.borrow_mut().remove_entries_with_path(&mut session.sync_odoo.symbol_table, &Path::new(&path).to_tree_path().sanitize_cow());
         let path_exists = !FileMgr::is_untitled(&path) && Path::new(&path).exists();
         if !path_exists {
             SyncOdoo::unload_path(session, Path::new(&path));
+            // Gone from disk: its graph nodes and edges go with it, as on a didDelete (which
+            // skipped it while it was open).
+            graph_recorder::on_path_removed(session, &path);
             FileMgr::delete_file_path(session, &path);
         } else if session.sync_odoo.is_external_path(Path::new(&path)) {
             FileMgr::delete_file_path(session, &path);
@@ -2175,6 +2266,7 @@ impl Odoo {
             //1 - delete old uri
             session.sync_odoo.opened_files.retain(|x| x != &old_path.clone());
             SyncOdoo::unload_path(session, Path::new(&old_path));
+            graph_recorder::on_path_removed(session, &Path::new(&old_path).sanitize());
             FileMgr::delete_path(session, &old_path);
             session.sync_odoo.entry_point_mgr.borrow_mut().remove_entries_with_path(&mut session.sync_odoo.symbol_table, &old_path);
             BuildScheduler::process_rebuilds(session, false);
@@ -2210,6 +2302,7 @@ impl Odoo {
             let is_open_file = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path).is_some_and(|fi| fi.borrow().opened);
             if !is_open_file {
                 SyncOdoo::unload_path(session, Path::new(&path));
+                graph_recorder::on_path_removed(session, &Path::new(&path).sanitize());
                 FileMgr::delete_path(session, &path);
                 session.sync_odoo.entry_point_mgr.borrow_mut().remove_entries_with_path(&mut session.sync_odoo.symbol_table, &Path::new(&path).to_tree_path().sanitize_cow());
             }
@@ -2307,6 +2400,10 @@ impl Odoo {
             session.log_message(MessageType::INFO, format!("File Change Event: {}, version {}", path, version));
             let (file_updated, file_info) = session.sync_odoo.get_file_mgr().borrow_mut().update_file_info(session, path, content, Some(version), false);
             file_info.borrow_mut().publish_diagnostics(session); //To push potential syntax errors or refresh previous one
+            if session.sync_odoo.state_init != InitState::NOT_READY {
+                // did_open of a file whose evicted diagnostics cannot be read: validate it again
+                diagnostics_store::revalidate_pending(session);
+            }
             return (!file_info.borrow().opened || version >= 0, file_updated);
         }
         (false, false)
@@ -2318,7 +2415,7 @@ impl Odoo {
         }
     }
 
-    pub(crate) fn handle_document_symbols(session: &mut SessionInfo<'_>, params: DocumentSymbolParams) -> Result<Option<DocumentSymbolResponse>, ResponseError> {
+    pub fn handle_document_symbols(session: &mut SessionInfo<'_>, params: DocumentSymbolParams) -> Result<Option<DocumentSymbolResponse>, ResponseError> {
         session.log_message(MessageType::INFO, format!("Document symbol requested for {}",
             params.text_document.uri.as_str(),
         ));

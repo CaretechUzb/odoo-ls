@@ -15,3 +15,6 @@ class EnvAttrProbe(models.Model):
         user = self.env.user
         user
         user.has_group("base.group_user")
+        self.env.uid
+        self.env.context
+        self.env.su

@@ -12,6 +12,7 @@ pub use storage::{
     compiled_symbol::CompiledSymbol,
     csv_file_symbol::CsvFileSymbol,
     dependency_mgr::Dependencies,
+    doc_string::DocString,
     disk_dir_symbol::DiskDirSymbol,
     file_symbol::FileSymbol,
     function_symbol::{self, FunctionSymbol},

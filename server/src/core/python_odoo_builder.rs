@@ -1,6 +1,5 @@
 use std::rc::Rc;
 use std::cell::RefCell;
-use ruff_python_ast::Expr;
 use lsp_types::Diagnostic;
 use tracing::error;
 
@@ -93,16 +92,16 @@ impl PythonOdooBuilder {
             if let Some(eval) = eval.follow_ref_and_get_value(session, None, diagnostics) {
                 match eval {
                     EvaluationValue::CONSTANT(c) => {
-                        if let Expr::StringLiteral(s) = c.as_ref() {
-                            session.st_mut()[symbol]._model.as_mut().unwrap().inherit = vec![oyarn!("{}", s.value)];
+                        if let Some(s) = c.as_str() {
+                            session.st_mut()[symbol]._model.as_mut().unwrap().inherit = vec![oyarn!("{}", s)];
                         } else {
                             error!("wrong _inherit value");
                         }
                     },
                     EvaluationValue::LIST(l) | EvaluationValue::TUPLE(l)=> {
-                        for e in l {
-                            if let Expr::StringLiteral(s) = e {
-                                session.st_mut()[symbol]._model.as_mut().unwrap().inherit.push(oyarn!("{}", s.value));
+                        for e in l.iter() {
+                            if let Some(s) = e.as_str() {
+                                session.st_mut()[symbol]._model.as_mut().unwrap().inherit.push(oyarn!("{}", s));
                             }
                         }
                     },
@@ -122,8 +121,8 @@ impl PythonOdooBuilder {
         if let Some(&_name) = _name.last() {
             for eval in session.st().evaluations(_name).unwrap().clone() {
                 let eval = eval.follow_ref_and_get_value(session, None, diagnostics);
-                if let Some(s) = eval.as_ref().and_then(EvaluationValue::as_string_literal) {
-                    return oyarn!("{}", s.value);
+                if let Some(s) = eval.as_ref().and_then(EvaluationValue::as_str) {
+                    return oyarn!("{}", s);
                 }
             }
             error!("unable to parse model name");
@@ -158,8 +157,8 @@ impl PythonOdooBuilder {
                 model.inherits.clear();
                 if let Some(EvaluationValue::DICT(d)) = eval {
                     for (k, v) in d.iter() {
-                        if let (Expr::StringLiteral(k), Expr::StringLiteral(v)) = (k,v) {
-                            model.inherits.push((oyarn!("{}", k.value), oyarn!("{}", v.value)));
+                        if let (Some(k), Some(v)) = (k.as_str(), v.as_str()) {
+                            model.inherits.push((oyarn!("{}", k), oyarn!("{}", v)));
                         } else {
                             error!("wrong _inherits value");
                         }
@@ -212,8 +211,8 @@ impl PythonOdooBuilder {
     fn _load_class_attributes(&mut self, session: &mut SessionInfo, diagnostics: &mut Vec<Diagnostic>) {
         let symbol = self.symbol;
         let descr = PythonOdooBuilder::_get_attribute(session, symbol, "_description", diagnostics);
-        if let Some(s) = descr.as_ref().and_then(EvaluationValue::as_string_literal) {
-            session.st_mut()[symbol]._model.as_mut().unwrap().description = S!(s.value.to_str());
+        if let Some(s) = descr.as_ref().and_then(EvaluationValue::as_str) {
+            session.st_mut()[symbol]._model.as_mut().unwrap().description = S!(s);
         } else {
             session.st_mut()[symbol]._model.as_mut().unwrap().description = session.st()[symbol]._model.as_ref().unwrap().name.to_string();
         }
@@ -230,14 +229,14 @@ impl PythonOdooBuilder {
             session.st_mut()[symbol]._model.as_mut().unwrap().log_access = session.st()[symbol]._model.as_ref().unwrap().auto;
         }
         let table = PythonOdooBuilder::_get_attribute(session, symbol, "_table", diagnostics);
-        if let Some(s) = table.as_ref().and_then(EvaluationValue::as_string_literal) {
-            session.st_mut()[symbol]._model.as_mut().unwrap().table = S!(s.value.to_str());
+        if let Some(s) = table.as_ref().and_then(EvaluationValue::as_str) {
+            session.st_mut()[symbol]._model.as_mut().unwrap().table = S!(s);
         } else {
             session.st_mut()[symbol]._model.as_mut().unwrap().table = session.st()[symbol]._model.as_ref().unwrap().name.replace(".", "_");
         }
         let sequence = PythonOdooBuilder::_get_attribute(session, symbol, "_sequence", diagnostics);
-        if let Some(s) = sequence.as_ref().and_then(EvaluationValue::as_string_literal) {
-            session.st_mut()[symbol]._model.as_mut().unwrap().sequence = S!(s.value.to_str());
+        if let Some(s) = sequence.as_ref().and_then(EvaluationValue::as_str) {
+            session.st_mut()[symbol]._model.as_mut().unwrap().sequence = S!(s);
         } else {
             session.st_mut()[symbol]._model.as_mut().unwrap().sequence = session.st()[symbol]._model.as_ref().unwrap().table.clone() + "_id_seq";
         }
@@ -255,8 +254,8 @@ impl PythonOdooBuilder {
         }
         let rec_name = PythonOdooBuilder::_get_attribute(session, symbol, "_rec_name", diagnostics);
         //TODO check that rec_name is a field
-        if let Some(s) = rec_name.as_ref().and_then(EvaluationValue::as_string_literal) {
-            session.st_mut()[symbol]._model.as_mut().unwrap().rec_name = Some(S!(s.value.to_str()));
+        if let Some(s) = rec_name.as_ref().and_then(EvaluationValue::as_str) {
+            session.st_mut()[symbol]._model.as_mut().unwrap().rec_name = Some(S!(s));
         } else {
             session.st_mut()[symbol]._model.as_mut().unwrap().rec_name = Some(S!("name")); //TODO if name is not on model, take 'id'
         }
@@ -267,8 +266,8 @@ impl PythonOdooBuilder {
             session.st_mut()[symbol]._model.as_mut().unwrap().check_company_auto = false;
         }
         let parent_name = PythonOdooBuilder::_get_attribute(session, symbol, "_parent_name", diagnostics);
-        if let Some(s) = parent_name.as_ref().and_then(EvaluationValue::as_string_literal) {
-            session.st_mut()[symbol]._model.as_mut().unwrap().parent_name = S!(s.value.to_str());
+        if let Some(s) = parent_name.as_ref().and_then(EvaluationValue::as_str) {
+            session.st_mut()[symbol]._model.as_mut().unwrap().parent_name = S!(s);
         } else {
             session.st_mut()[symbol]._model.as_mut().unwrap().parent_name = S!("parent_id");
         }
@@ -279,20 +278,20 @@ impl PythonOdooBuilder {
             session.st_mut()[symbol]._model.as_mut().unwrap().parent_store = false;
         }
         let active_name = PythonOdooBuilder::_get_attribute(session, symbol, "_active_name", diagnostics);
-        if let Some(s) = active_name.as_ref().and_then(EvaluationValue::as_string_literal) {
-            session.st_mut()[symbol]._model.as_mut().unwrap().active_name = Some(S!(s.value.to_str()));
+        if let Some(s) = active_name.as_ref().and_then(EvaluationValue::as_str) {
+            session.st_mut()[symbol]._model.as_mut().unwrap().active_name = Some(S!(s));
         } else {
             session.st_mut()[symbol]._model.as_mut().unwrap().active_name = None;
         }
         let data_name = PythonOdooBuilder::_get_attribute(session, symbol, "_data_name", diagnostics);
-        if let Some(s) = data_name.as_ref().and_then(EvaluationValue::as_string_literal) {
-            session.st_mut()[symbol]._model.as_mut().unwrap().data_name = S!(s.value.to_str());
+        if let Some(s) = data_name.as_ref().and_then(EvaluationValue::as_str) {
+            session.st_mut()[symbol]._model.as_mut().unwrap().data_name = S!(s);
         } else {
             session.st_mut()[symbol]._model.as_mut().unwrap().data_name = S!("date");
         }
         let fold_name = PythonOdooBuilder::_get_attribute(session, symbol, "_fold_name", diagnostics);
-        if let Some(s) = fold_name.as_ref().and_then(EvaluationValue::as_string_literal) {
-            session.st_mut()[symbol]._model.as_mut().unwrap().fold_name = S!(s.value.to_str());
+        if let Some(s) = fold_name.as_ref().and_then(EvaluationValue::as_str) {
+            session.st_mut()[symbol]._model.as_mut().unwrap().fold_name = S!(s);
         } else {
             session.st_mut()[symbol]._model.as_mut().unwrap().fold_name = S!("fold");
         }
@@ -315,6 +314,7 @@ impl PythonOdooBuilder {
         if let Some(&id_field) = id_field.last() {
             let evaluation = Evaluation::eval_from_symbol(session.st(), id_field, Some(true));
             session.st_mut()[id].evaluations.push(evaluation);
+            session.st_mut()[id].evaluations.shrink_to_fit();
         }
         //display_name
         let display_name = session.st_mut().add_new_variable(symbol, "display_name", range);
@@ -322,6 +322,7 @@ impl PythonOdooBuilder {
         if let Some(&char_field) = char_field.last() {
             let evaluation = Evaluation::eval_from_symbol(session.st(), char_field, Some(true));
             session.st_mut()[display_name].evaluations.push(evaluation);
+            session.st_mut()[display_name].evaluations.shrink_to_fit();
         }
         //if log_access
         if session.st()[symbol]._model.as_ref().unwrap().log_access {
@@ -331,6 +332,7 @@ impl PythonOdooBuilder {
             if let Some(&many2one_field) = many2one_field.last() {
                 let evaluation = Evaluation::eval_from_symbol(session.st(), many2one_field, Some(true));
                 session.st_mut()[create_uid].evaluations.push(evaluation);
+                session.st_mut()[create_uid].evaluations.shrink_to_fit();
             }
             //create_date
             let create_date = session.st_mut().add_new_variable(symbol, "create_date", range);
@@ -338,6 +340,7 @@ impl PythonOdooBuilder {
             if let Some(&datetime_field) = datetime_field.last() {
                 let evaluation = Evaluation::eval_from_symbol(session.st(), datetime_field, Some(true));
                 session.st_mut()[create_date].evaluations.push(evaluation);
+                session.st_mut()[create_date].evaluations.shrink_to_fit();
             }
             //write_uid
             let write_uid = session.st_mut().add_new_variable(symbol, "write_uid", range);
@@ -345,6 +348,7 @@ impl PythonOdooBuilder {
             if let Some(&many2one_field) = many2one_field.last() {
                 let evaluation = Evaluation::eval_from_symbol(session.st(), many2one_field, Some(true));
                 session.st_mut()[write_uid].evaluations.push(evaluation);
+                session.st_mut()[write_uid].evaluations.shrink_to_fit();
             }
             //write_date
             let write_date = session.st_mut().add_new_variable(symbol, "write_date", range);
@@ -352,6 +356,7 @@ impl PythonOdooBuilder {
             if let Some(&datetime_field) = datetime_field.last() {
                 let evaluation = Evaluation::eval_from_symbol(session.st(), datetime_field, Some(true));
                 session.st_mut()[write_date].evaluations.push(evaluation);
+                session.st_mut()[write_date].evaluations.shrink_to_fit();
             }
         }
     }

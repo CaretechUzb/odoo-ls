@@ -16,6 +16,9 @@ pub struct HoverFeature {}
 impl HoverFeature {
 
     pub fn hover_python(session: &mut SessionInfo, file_symbol: SourceFileKey, file_info: &Rc<RefCell<FileInfo>>, line: u32, character: u32) -> Option<Hover> {
+        if !FileInfo::ensure_ast(file_info, session) {
+            return None;
+        }
         let offset = file_info.borrow().position_to_offset(line, character, session.sync_odoo.encoding);
         let file_info_ast_clone = file_info.borrow().file_info_ast.clone();
         let file_info_ast_ref = file_info_ast_clone.borrow();

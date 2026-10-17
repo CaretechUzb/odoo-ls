@@ -2,7 +2,7 @@ use std::{io::Error, panic, sync::{Arc, Mutex, atomic::AtomicBool}, thread::Join
 
 use crossbeam_channel::{Receiver, Select, Sender};
 use lsp_server::{Connection, IoThreads, Message, ProtocolError, RequestId, ResponseError};
-use lsp_types::{CancelParams, CompletionOptions, DeclarationOptions, DefinitionOptions, DocumentSymbolOptions, FileOperationFilter, FileOperationPattern, FileOperationRegistrationOptions, HoverProviderCapability, InitializeParams, InitializeResult, OneOf, ReferencesOptions, SaveOptions, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, WorkDoneProgressOptions, WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities, WorkspaceSymbolOptions, notification::{Cancel, DidChangeConfiguration, DidChangeTextDocument, DidChangeWatchedFiles, DidChangeWorkspaceFolders, DidCloseTextDocument, DidCreateFiles, DidDeleteFiles, DidOpenTextDocument, DidRenameFiles, DidSaveTextDocument, Notification}, request::{Completion, DocumentSymbolRequest, GotoDeclaration, GotoDefinition, HoverRequest, References, Request, ResolveCompletionItem, Shutdown, WorkspaceSymbolRequest, WorkspaceSymbolResolve, SemanticTokensFullRequest}};
+use lsp_types::{CancelParams, CompletionOptions, DeclarationOptions, DefinitionOptions, DocumentSymbolOptions, FileOperationFilter, FileOperationPattern, FileOperationRegistrationOptions, HoverProviderCapability, InitializeParams, InitializeResult, OneOf, ReferencesOptions, SaveOptions, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, WorkDoneProgressOptions, WorkspaceFileOperationsServerCapabilities, WorkspaceFoldersServerCapabilities, WorkspaceServerCapabilities, WorkspaceSymbolOptions, notification::{Cancel, DidChangeConfiguration, DidChangeTextDocument, DidChangeWatchedFiles, DidChangeWorkspaceFolders, DidCloseTextDocument, DidCreateFiles, DidDeleteFiles, DidOpenTextDocument, DidRenameFiles, DidSaveTextDocument, Notification}, request::{CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare, TypeHierarchyPrepare, TypeHierarchySubtypes, TypeHierarchySupertypes, Completion, DocumentSymbolRequest, GotoDeclaration, GotoDefinition, HoverRequest, References, Request, ResolveCompletionItem, Shutdown, WorkspaceSymbolRequest, WorkspaceSymbolResolve, SemanticTokensFullRequest}};
 use crate::features::semantic_tokens::SemanticTokensFeature;
 use ruff_source_file::PositionEncoding;
 use serde_json::json;
@@ -12,6 +12,27 @@ use tracing::{error, info, warn};
 
 use crate::{S, constants::{DEBUG_THREADS, EXTENSION_VERSION}, core::odoo::{OdooNotification, SyncOdoo}, crash_buffer, threads::{DelayedProcessingMessage, ThreadMessage, delayed_changes_process_thread, message_processor_thread_main}};
 
+
+/// Whether the main thread answers this request method. `Server::forward_message` answers every
+/// other request with [`method_not_found_response`].
+pub fn is_main_thread_request(method: &str) -> bool {
+    matches!(method,
+        HoverRequest::METHOD | GotoDefinition::METHOD | GotoDeclaration::METHOD | References::METHOD | DocumentSymbolRequest::METHOD |
+        WorkspaceSymbolRequest::METHOD | WorkspaceSymbolResolve::METHOD | Completion::METHOD | ResolveCompletionItem::METHOD |
+        SemanticTokensFullRequest::METHOD |
+        CallHierarchyPrepare::METHOD | CallHierarchyIncomingCalls::METHOD | CallHierarchyOutgoingCalls::METHOD |
+        TypeHierarchyPrepare::METHOD | TypeHierarchySupertypes::METHOD | TypeHierarchySubtypes::METHOD
+    )
+}
+
+/// JSON-RPC `MethodNotFound` error for a request method the server does not handle.
+pub fn method_not_found_response(request: &lsp_server::Request) -> lsp_server::Response {
+    lsp_server::Response::new_err(
+        request.id.clone(),
+        lsp_server::ErrorCode::MethodNotFound as i32,
+        format!("odoo-ls: unsupported request method: {}", request.method),
+    )
+}
 
 /**
  * Server handle connection between the client and the extension.
@@ -189,6 +210,7 @@ impl Server {
                     trigger_characters: Some(vec![S!("."), S!(","), S!("'"), S!("\""), S!("(")]),
                     ..CompletionOptions::default()
                 }),
+                call_hierarchy_provider: Some(lsp_types::CallHierarchyServerCapability::Simple(true)),
                 references_provider: Some(OneOf::Right(ReferencesOptions {
                     work_done_progress_options: WorkDoneProgressOptions {
                         work_done_progress: Some(false)
@@ -268,7 +290,10 @@ impl Server {
             }
         };
 
-        self.connection.as_ref().unwrap().initialize_finish(id, serde_json::to_value(initialize_data).unwrap())?;
+        let mut initialize_data = serde_json::to_value(initialize_data).unwrap();
+        // lsp-types 0.97 has no ServerCapabilities field for the LSP 3.17 type hierarchy.
+        initialize_data["capabilities"]["typeHierarchyProvider"] = json!(true);
+        self.connection.as_ref().unwrap().initialize_finish(id, initialize_data)?;
         let _ = self.connection.as_ref().unwrap().sender.send(Message::Notification(lsp_server::Notification {
             method: OdooNotification::SetPid.as_str().to_string(),
             params: json!({
@@ -427,19 +452,18 @@ impl Server {
     fn forward_message(&mut self, msg: Message) {
         match msg {
             Message::Request(r) => {
-                self.running_request_ids.lock().unwrap().push(r.id.clone());
-                match r.method.as_str() {
-                    HoverRequest::METHOD | GotoDefinition::METHOD | GotoDeclaration::METHOD | References::METHOD | DocumentSymbolRequest::METHOD |
-                    WorkspaceSymbolRequest::METHOD | WorkspaceSymbolResolve::METHOD | Completion::METHOD | ResolveCompletionItem::METHOD |
-                    SemanticTokensFullRequest::METHOD => {
-                        self.interrupt_rebuild_boolean.store(true, std::sync::atomic::Ordering::SeqCst);
-                        if DEBUG_THREADS {
-                            info!("Sending request to main thread : {} - {}", r.method, r.id);
-                        }
-                        self.generic_sender_to_main.send(ThreadMessage::LSPMessage(Message::Request(r))).unwrap();
-                    },
-                    _ => {panic!("Not handled Request Id: {}", r.method)}
+                if !is_main_thread_request(r.method.as_str()) {
+                    // Answer instead of panicking: a panic here kills the server for every client.
+                    warn!("Not handled Request Id: {}", r.method);
+                    let _ = self.connection.as_ref().unwrap().sender.send(Message::Response(method_not_found_response(&r)));
+                    return;
                 }
+                self.running_request_ids.lock().unwrap().push(r.id.clone());
+                self.interrupt_rebuild_boolean.store(true, std::sync::atomic::Ordering::SeqCst);
+                if DEBUG_THREADS {
+                    info!("Sending request to main thread : {} - {}", r.method, r.id);
+                }
+                self.generic_sender_to_main.send(ThreadMessage::LSPMessage(Message::Request(r))).unwrap();
             },
             Message::Response(r) => {
                 if DEBUG_THREADS {

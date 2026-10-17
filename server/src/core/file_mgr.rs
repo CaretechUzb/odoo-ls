@@ -13,11 +13,13 @@ use crate::core::js_arch_builder::{ImportSource, JsImportKind, JsDeclaration, Js
 use crate::core::js_arch_builder::ComponentDescriptor;
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc, OnceLock};
+use std::collections::VecDeque;
+use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, OnceLock};
 use std::{fs};
 use crate::utils::{HashMap, HashSet};
 use crate::core::{config::{DiagnosticFilter, DiagnosticFilterPathType}, js_arch_builder, js_utils};
 use crate::core::diagnostics::{create_diagnostic, DiagnosticCode, DiagnosticSetting};
+use crate::core::diagnostics_store;
 use crate::core::text_document::TextDocument;
 use crate::features::node_index_ast::IndexedModule;
 use crate::core::symbols::symbol_keys::SourceFileKey;
@@ -366,15 +368,167 @@ pub struct FileInfoAst {
     pub text_hash: u64,
     pub text_document: Option<TextDocument>,
     pub ast: Ast,
+    /// Line offsets of the text, kept when the text is dropped (see [`Self::drop_ast`]) so that
+    /// ranges can still be turned into positions without re-reading or re-parsing the file.
+    line_table: Option<LineTable>,
 }
 
 impl FileInfoAst {
+    /// Free the Python AST and source text of a file, keeping its `text_hash` and a [`LineTable`].
+    /// [`FileInfo::prepare_ast`] re-reads and re-parses the file when the AST is needed again.
+    /// Other kinds of files are left untouched.
+    pub fn drop_ast(&mut self) {
+        let Ast::PythonAst(python_ast) = &mut self.ast else {
+            return;
+        };
+        python_ast.indexed_module = None;
+        if let Some(text_document) = self.text_document.take() {
+            self.line_table = Some(LineTable::new(&text_document));
+        }
+    }
+
+    /// Whether offsets in this file can be turned into positions without reading it.
+    pub fn can_convert_ranges(&self) -> bool {
+        self.text_document.is_some() || self.line_table.is_some()
+    }
+
+    /// The [`LineTable`] standing in for the text, when the text has been dropped.
+    fn dropped_line_table(&self) -> Option<&LineTable> {
+        match self.text_document {
+            None => self.line_table.as_ref(),
+            Some(_) => None,
+        }
+    }
+
     pub fn get_stmts(&self) -> Option<&[Stmt]> {
         match &self.ast {
             Ast::PythonAst(python_ast) => {
                 python_ast.indexed_module.as_ref().map(|module| module.parsed.syntax().body.as_slice())
             },
             _ => None
+        }
+    }
+}
+
+/// What is kept of a dropped [`TextDocument`]: its line starts, its length and where its
+/// non-ASCII characters are. That is enough to convert between offsets and positions in every
+/// encoding exactly as the text would, without reading the file again.
+#[derive(Debug)]
+struct LineTable {
+    index: LineIndex,
+    text_len: TextSize,
+    /// The non-ASCII characters, as runs of consecutive characters of the same widths, sorted.
+    /// Empty for an ASCII text.
+    wide_runs: Box<[WideRun]>,
+}
+
+/// Consecutive non-ASCII characters of the same UTF-8 and UTF-16 widths. A run never spans two
+/// lines: line ends are ASCII.
+#[derive(Debug, Clone, Copy)]
+struct WideRun {
+    start: u32,
+    chars: u16,
+    utf8_width: u8,
+    utf16_width: u8,
+}
+
+impl WideRun {
+    fn end(&self) -> u32 {
+        self.start + self.chars as u32 * self.utf8_width as u32
+    }
+
+    /// Code units of one character of the run in `encoding` (UTF-8 never gets here).
+    fn units(&self, encoding: PositionEncoding) -> u32 {
+        match encoding {
+            PositionEncoding::Utf16 => self.utf16_width as u32,
+            _ => 1,
+        }
+    }
+}
+
+impl LineTable {
+    fn new(text_document: &TextDocument) -> Self {
+        let index = text_document.index().clone();
+        let text = text_document.contents();
+        let mut wide_runs: Vec<WideRun> = vec![];
+        if !index.is_ascii() {
+            for (offset, c) in text.char_indices().filter(|(_, c)| !c.is_ascii()) {
+                let (offset, utf8_width, utf16_width) = (offset as u32, c.len_utf8() as u8, c.len_utf16() as u8);
+                match wide_runs.last_mut() {
+                    Some(run) if run.end() == offset && run.utf8_width == utf8_width && run.utf16_width == utf16_width && run.chars < u16::MAX => {
+                        run.chars += 1;
+                    },
+                    _ => wide_runs.push(WideRun { start: offset, chars: 1, utf8_width, utf16_width }),
+                }
+            }
+        }
+        Self { index, text_len: TextSize::of(text), wide_runs: wide_runs.into_boxed_slice() }
+    }
+
+    /// Runs on the line `[line_start, line_end)`.
+    fn runs_of_line(&self, line_start: TextSize, line_end: TextSize) -> &[WideRun] {
+        let first = self.wide_runs.partition_point(|run| run.start < line_start.to_u32());
+        let last = self.wide_runs.partition_point(|run| run.start < line_end.to_u32());
+        &self.wide_runs[first..last.max(first)]
+    }
+
+    /// Same as [`offset_to_position_with_line_index`] on the dropped text.
+    fn offset_to_position(&self, offset: u32, encoding: PositionEncoding) -> Position {
+        let offset = TextSize::new(offset).min(self.text_len);
+        let row = self.index.line_index(offset).to_zero_indexed();
+        let line_start = self.index.line_starts()[row];
+        let mut character = (offset - line_start).to_u32();
+        if !matches!(encoding, PositionEncoding::Utf8) {
+            for run in self.runs_of_line(line_start, offset) {
+                let covered = run.chars as u32 * run.utf8_width as u32;
+                let covered = covered.min(offset.to_u32() - run.start) / run.utf8_width as u32;
+                character -= covered * (run.utf8_width as u32 - run.units(encoding));
+            }
+        }
+        Position::new(row as u32, character)
+    }
+
+    /// Same as [`position_to_offset_with_line_index`] on the dropped text (`LineIndex::offset`:
+    /// a column past the end of the line stops after its line end, a line past the end of the
+    /// text is the end of the text).
+    fn position_to_offset(&self, line: u32, character: u32, encoding: PositionEncoding) -> usize {
+        let starts = self.index.line_starts();
+        let line = line as usize;
+        if line >= starts.len() {
+            return self.text_len.to_usize();
+        }
+        let line_start = starts[line];
+        let line_end = starts.get(line + 1).copied().unwrap_or(self.text_len);
+        if self.wide_runs.is_empty() || matches!(encoding, PositionEncoding::Utf8) {
+            return (line_start + TextSize::new(character)).min(line_end).to_usize();
+        }
+        // Characters are taken until `character` code units are reached, as `LineIndex::offset`
+        // does: a character that straddles it is taken whole.
+        let mut position = line_start.to_u32();
+        let mut remaining = character;
+        for run in self.runs_of_line(line_start, line_end) {
+            let ascii = run.start - position;
+            if remaining <= ascii {
+                return (position + remaining) as usize;
+            }
+            remaining -= ascii;
+            position = run.start;
+            let units = run.units(encoding);
+            if remaining <= run.chars as u32 * units {
+                return (position + remaining.div_ceil(units) * run.utf8_width as u32) as usize;
+            }
+            remaining -= run.chars as u32 * units;
+            position = run.end();
+        }
+        (position + remaining).min(line_end.to_u32()) as usize
+    }
+
+    /// Same as `LineIndex::line_end_exclusive` of the line before the one holding `offset`.
+    fn prev_line_end(&self, offset: TextSize) -> TextSize {
+        let row = self.index.line_index(offset).to_zero_indexed().saturating_sub(1);
+        match self.index.line_starts().get(row + 1) {
+            Some(next_line_start) => *next_line_start - TextSize::new(1),
+            None => self.text_len,
         }
     }
 }
@@ -388,6 +542,14 @@ pub struct FileInfo {
     need_push: bool,
     pub file_info_ast: Rc<RefCell<FileInfoAst>>,
     diagnostics: HashMap<DiagnosticSource, Vec<Diagnostic>>,
+    /// Bit per `DiagnosticSource` whose diagnostics are in the graph index database, not in
+    /// `diagnostics` (see `diagnostics_store`). Their entry stays in the map, empty, so that the
+    /// published order (the iteration order of the map) does not change. Anything added to an
+    /// evicted source in the meantime follows the stored diagnostics.
+    evicted_diagnostics: u32,
+    /// The file's validation has published its diagnostics: from then on every publish moves them
+    /// out of RAM unless the file is opened. Reset when the diagnostics are cleared.
+    diagnostics_evictable: bool,
     pub noqas_blocs: HashMap<u32, NoqaInfo>,
     noqas_lines: HashMap<u32, NoqaInfo>,
     diagnostic_filters: Vec<DiagnosticFilter>,
@@ -407,8 +569,11 @@ impl FileInfo {
                 text_hash: 0,
                 text_document: None,
                 ast: Ast::PythonAst(PythonAst::new()),
+                line_table: None,
             })),
             diagnostics: HashMap::default(),
+            evicted_diagnostics: 0,
+            diagnostics_evictable: false,
             noqas_blocs: HashMap::default(),
             noqas_lines: HashMap::default(),
             diagnostic_filters: Vec::new(),
@@ -484,6 +649,11 @@ impl FileInfo {
         let old_hash = self.file_info_ast.borrow().text_hash;
         let new_hash = hash_text_document(self.file_info_ast.borrow().text_document.as_ref().unwrap());
         if old_hash == new_hash {
+            // Unchanged content, but the AST may have been dropped (file_cache off): callers expect
+            // it back. The build drops it again after the file's next validation.
+            if !self.file_info_ast.borrow().ast.is_built() {
+                self._build_ast(session, is_external);
+            }
             return false;
         }
         self.file_info_ast.borrow_mut().text_hash = new_hash;
@@ -519,7 +689,7 @@ impl FileInfo {
         if !is_external {
             self.noqas_blocs = parsed.noqas_blocs;
             self.noqas_lines = parsed.noqas_lines;
-            self.diag_test_comments.extend(parsed.diag_test_comments);
+            self.diag_test_comments = parsed.diag_test_comments;
         }
         let (valid, diagnostics) = Self::syntax_diagnostics(session, &parsed.indexed_module.parsed);
         self.valid = valid;
@@ -677,21 +847,56 @@ impl FileInfo {
 
     /* if ast has been set to none to lower memory usage, try to reload it */
     pub fn prepare_ast(&mut self, session: &mut SessionInfo) {
-        if self.file_info_ast.borrow_mut().text_document.is_none() { //can already be set in xml files
-            match fs::read_to_string(&self.uri) {
-                Ok(content) => {
-                    self.file_info_ast.borrow_mut().text_document = Some(TextDocument::new(content, self.version.unwrap_or(-1)));
-                },
-                Err(_) => {
-                    return;
-                },
-            };
+        let is_python = matches!(self.file_info_ast.borrow().ast, Ast::PythonAst(_));
+        let previous_hash = self.file_info_ast.borrow().text_hash;
+        let preloaded = match is_python && self.file_info_ast.borrow().text_document.is_none() {
+            // A pre-parse worker may have parsed it ahead of its validation, see `SyncOdoo::build_modules`.
+            true => SyncOdoo::take_preloaded(session, &self.uri),
+            false => None,
+        };
+        if let Some(preloaded) = preloaded {
+            self.apply_preloaded(session, preloaded);
+        } else {
+            if self.file_info_ast.borrow_mut().text_document.is_none() { //can already be set in xml files
+                match fs::read_to_string(&self.uri) {
+                    Ok(content) => {
+                        self.file_info_ast.borrow_mut().text_document = Some(TextDocument::new(content, self.version.unwrap_or(-1)));
+                    },
+                    Err(_) => {
+                        return;
+                    },
+                };
+            }
+            {
+                let mut fia = self.file_info_ast.borrow_mut();
+                fia.text_hash = hash_text_document(fia.text_document.as_ref().unwrap());
+            }
+            self._build_ast(session, session.sync_odoo.get_file_mgr().borrow().is_in_workspace(&self.uri));
         }
-        {
-            let mut fia = self.file_info_ast.borrow_mut();
-            fia.text_hash = hash_text_document(fia.text_document.as_ref().unwrap());
+        let new_hash = self.file_info_ast.borrow().text_hash;
+        if is_python && previous_hash != 0 && new_hash != previous_hash {
+            // The file changed on disk since its AST was dropped, and no event told us yet. Its
+            // symbols (node indexes included) were built from the previous content: have it
+            // reloaded. The watcher event, if one comes, will find the file unchanged.
+            warn!("{} changed on disk since it was parsed: reloading it", self.uri);
+            if !session.sync_odoo.files_changed_on_disk.contains(&self.uri) {
+                session.sync_odoo.files_changed_on_disk.push(self.uri.clone());
+            }
+            session.request_delayed_rebuild();
         }
-        self._build_ast(session, session.sync_odoo.get_file_mgr().borrow().is_in_workspace(&self.uri));
+        if is_python && !self.opened && !session.sync_odoo.config.file_cache() {
+            AST_REPARSES.fetch_add(1, Ordering::Relaxed);
+            session.sync_odoo.get_file_mgr().borrow().keep_reparsed_ast(&self.uri);
+        }
+    }
+
+    /// Re-acquire the AST of `file_info` if it was dropped, see [`Self::prepare_ast`]. Returns
+    /// false if there is still no AST, e.g. the file was deleted from disk since.
+    pub fn ensure_ast(file_info: &Rc<RefCell<FileInfo>>, session: &mut SessionInfo) -> bool {
+        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+            file_info.borrow_mut().prepare_ast(session);
+        }
+        file_info.borrow().file_info_ast.borrow().ast.is_built()
     }
 
     /// Scan a parsed module's comment tokens for `noqa` directives and (in test mode)
@@ -775,7 +980,93 @@ impl FileInfo {
 
     pub fn replace_diagnostics(&mut self, step: DiagnosticSource, diagnostics: Vec<Diagnostic>) {
         self.need_push = true;
+        self.evicted_diagnostics &= !Self::source_bit(step);
         self.diagnostics.insert(step, diagnostics);
+    }
+
+    fn source_bit(source: DiagnosticSource) -> u32 {
+        1 << (source as u32)
+    }
+
+    /// Whether some diagnostics of the file are in the graph index database.
+    pub fn has_evicted_diagnostics(&self) -> bool {
+        self.evicted_diagnostics != 0
+    }
+
+    /// Drop the diagnostics, evicted ones included, without publishing (they are recomputed).
+    pub fn forget_diagnostics(&mut self) {
+        self.diagnostics.clear();
+        self.evicted_diagnostics = 0;
+        self.diagnostics_evictable = false;
+    }
+
+    /// The file's validation is done: its diagnostics may leave RAM after their publish.
+    pub fn set_diagnostics_evictable(&mut self) {
+        self.diagnostics_evictable = true;
+    }
+
+    /// Bring the evicted diagnostics back into RAM. False if they cannot be read: the file then
+    /// waits for a new validation (`diagnostics_store::request_revalidation`).
+    fn load_evicted_diagnostics(&mut self, session: &mut SessionInfo) -> bool {
+        let Some(rows) = diagnostics_store::load(session, &self.uri) else { return false };
+        let mut loaded: Vec<(DiagnosticSource, Vec<Diagnostic>)> = vec![];
+        for &source in self.diagnostics.keys() {
+            if self.evicted_diagnostics & Self::source_bit(source) == 0 {
+                continue;
+            }
+            let Some((_, payload)) = rows.iter().find(|(s, _)| *s == source as i64) else {
+                error!("Diagnostics of {} for {:?} missing from the graph index", self.uri, source);
+                return false;
+            };
+            match serde_json::from_str::<Vec<Diagnostic>>(payload) {
+                Ok(diagnostics) => loaded.push((source, diagnostics)),
+                Err(e) => {
+                    error!("Diagnostics of {} for {:?} unreadable in the graph index: {}", self.uri, source, e);
+                    return false;
+                },
+            }
+        }
+        for (source, mut diagnostics) in loaded {
+            let added_since = self.diagnostics.get_mut(&source).map(std::mem::take).unwrap_or_default();
+            diagnostics.extend(added_since);
+            self.diagnostics.insert(source, diagnostics);
+        }
+        self.evicted_diagnostics = 0;
+        true
+    }
+
+    /// tsserver diagnostics stay in RAM: no validation of the file recomputes them (R9).
+    fn can_evict_source(source: DiagnosticSource) -> bool {
+        !matches!(source, DiagnosticSource::JS_TSSERVER_SYNTAX | DiagnosticSource::JS_TSSERVER_SEMANTIC | DiagnosticSource::JS_TSSERVER_SUGGESTION)
+    }
+
+    /// Move the non-empty diagnostics to the graph index database (see `diagnostics_store`).
+    fn evict_diagnostics(&mut self, session: &mut SessionInfo) {
+        if !diagnostics_store::can_evict(session) {
+            return;
+        }
+        let mut rows = vec![];
+        for (&source, diagnostics) in self.diagnostics.iter() {
+            if diagnostics.is_empty() || !Self::can_evict_source(source) {
+                continue;
+            }
+            match serde_json::to_string(diagnostics) {
+                Ok(payload) => rows.push((source as i64, payload)),
+                Err(e) => {
+                    error!("Cannot serialize the diagnostics of {}: {}", self.uri, e);
+                    return;
+                },
+            }
+        }
+        if rows.is_empty() || !diagnostics_store::evict(session, &self.uri, rows) {
+            return;
+        }
+        for (&source, diagnostics) in self.diagnostics.iter_mut() {
+            if !diagnostics.is_empty() && Self::can_evict_source(source) {
+                *diagnostics = Vec::new();
+                self.evicted_diagnostics |= Self::source_bit(source);
+            }
+        }
     }
 
     pub fn update_validation_diagnostics(&mut self, diagnostics: HashMap<DiagnosticSource, Vec<Diagnostic>>) {
@@ -787,7 +1078,7 @@ impl FileInfo {
 
     pub fn clear_diagnostics(&mut self) {
         self.need_push = true;
-        self.diagnostics.clear();
+        self.forget_diagnostics();
     }
 
     fn update_range(&self, mut diagnostic: Diagnostic, encoding: PositionEncoding) -> Diagnostic {
@@ -841,6 +1132,12 @@ impl FileInfo {
     }
 
     pub fn publish_diagnostics(&mut self, session: &mut SessionInfo) {
+        // Evicted diagnostics are needed to publish, and opened files keep theirs in RAM.
+        if self.evicted_diagnostics != 0 && (self.need_push || self.opened)
+            && !self.load_evicted_diagnostics(session) {
+                diagnostics_store::request_revalidation(session, &self.uri);
+                return;
+            }
         if self.need_push {
             let mut all_diagnostics = Vec::new();
 
@@ -920,6 +1217,9 @@ impl FileInfo {
             });
             self.need_push = false;
         }
+        if self.diagnostics_evictable && !self.opened {
+            self.evict_diagnostics(session);
+        }
     }
 
     fn offset_to_position_with_text_document(text_document: &TextDocument, offset: u32, encoding: PositionEncoding) -> Position {
@@ -934,11 +1234,29 @@ impl FileInfo {
     }
 
     pub fn offset_to_position(&self, offset: u32, encoding: PositionEncoding) -> Position {
-        FileInfo::offset_to_position_with_text_document(self.file_info_ast.borrow().text_document.as_ref().expect("no text_document provided"), offset, encoding)
+        let fia = self.file_info_ast.borrow();
+        if let Some(line_table) = fia.dropped_line_table() {
+            return line_table.offset_to_position(offset, encoding);
+        }
+        FileInfo::offset_to_position_with_text_document(fia.text_document.as_ref().expect("no text_document provided"), offset, encoding)
     }
 
     fn try_offset_to_position(&self, offset: u32, encoding: PositionEncoding) -> Option<Position> {
-        FileInfo::try_offset_to_position_with_text_document(self.file_info_ast.borrow().text_document.as_ref()?, offset, encoding)
+        let fia = self.file_info_ast.borrow();
+        if let Some(line_table) = fia.dropped_line_table() {
+            return Some(line_table.offset_to_position(offset, encoding));
+        }
+        FileInfo::try_offset_to_position_with_text_document(fia.text_document.as_ref()?, offset, encoding)
+    }
+
+    /// Position of `offset` from what is in memory: the text, or the [`LineTable`] of a dropped
+    /// text. None when there is neither (the file was never read).
+    pub fn offset_to_position_in_memory(&self, offset: u32, encoding: PositionEncoding) -> Option<Position> {
+        let fia = self.file_info_ast.borrow();
+        if let Some(text_document) = fia.text_document.as_ref() {
+            return Some(offset_to_position_with_line_index(text_document.index(), text_document.contents(), offset as usize, encoding));
+        }
+        Some(fia.line_table.as_ref()?.offset_to_position(offset, encoding))
     }
 
     pub fn text_range_to_range(&self, range: TextRange, encoding: PositionEncoding) -> Range {
@@ -967,13 +1285,20 @@ impl FileInfo {
     }
 
     pub fn position_to_offset(&self, line: u32, char: u32, encoding: PositionEncoding) -> usize {
-        FileInfo::position_to_offset_with_text_document(self.file_info_ast.borrow().text_document.as_ref().expect("no text_document provided"), line, char, encoding)
+        let fia = self.file_info_ast.borrow();
+        if let Some(line_table) = fia.dropped_line_table() {
+            return line_table.position_to_offset(line, char, encoding);
+        }
+        FileInfo::position_to_offset_with_text_document(fia.text_document.as_ref().expect("no text_document provided"), line, char, encoding)
     }
 
     /// Returns the offset of the end of the line preceding the line that `offset` is on
     /// (excluding the newline character), using the document's `LineIndex`.
     pub fn prev_line_end(&self, offset: TextSize) -> Option<TextSize> {
         let ast_ref = self.file_info_ast.borrow();
+        if let Some(line_table) = ast_ref.dropped_line_table() {
+            return Some(line_table.prev_line_end(offset));
+        }
         let td = ast_ref.text_document.as_ref()?;
         let index = td.index();
         let line = index.line_index(offset);
@@ -987,7 +1312,17 @@ pub struct FileMgr {
     pub files: HashMap<String, Rc<RefCell<FileInfo>>>,
     untitled_files: HashMap<String, Rc<RefCell<FileInfo>>>, // key: untitled URI or unique name
     workspace_folders: HashSet<(String, Uri)>,
+    /// Paths of the non-opened files whose dropped AST was parsed again on demand, oldest first.
+    /// Bounded by [`REPARSED_AST_CAPACITY`]: see [`Self::keep_reparsed_ast`].
+    reparsed_asts: RefCell<VecDeque<String>>,
 }
+
+/// How many ASTs parsed again on demand (requests, functions built lazily) stay in memory
+/// when `file_cache` is off.
+const REPARSED_AST_CAPACITY: usize = 64;
+
+/// Number of dropped ASTs parsed again, for the build logs.
+pub static AST_REPARSES: AtomicUsize = AtomicUsize::new(0);
 
 impl Default for FileMgr {
     fn default() -> Self {
@@ -1020,6 +1355,7 @@ impl FileMgr {
             files: HashMap::default(),
             untitled_files: HashMap::default(),
             workspace_folders: HashSet::default(),
+            reparsed_asts: RefCell::new(VecDeque::new()),
         }
     }
 
@@ -1028,6 +1364,38 @@ impl FileMgr {
         Range::new(
             Position::new(range.start().to_u32(), 0),
             Position::new(range.end().to_u32(), 0))
+    }
+
+    /// Drop the AST and text of a file nobody has opened (see [`FileInfoAst::drop_ast`]), unless
+    /// `file_cache` keeps every AST in memory. A file in use right now keeps its AST.
+    pub fn drop_ast(session: &SessionInfo, file_info: &Rc<RefCell<FileInfo>>) {
+        if !session.sync_odoo.config.file_cache() {
+            Self::try_drop_ast(file_info);
+        }
+    }
+
+    fn try_drop_ast(file_info: &Rc<RefCell<FileInfo>>) {
+        if let Ok(file_info) = file_info.try_borrow()
+            && !file_info.opened
+            && let Ok(mut file_info_ast) = file_info.file_info_ast.try_borrow_mut() {
+                file_info_ast.drop_ast();
+            }
+    }
+
+    /// Note that the dropped AST of `path` was parsed again. Only the [`REPARSED_AST_CAPACITY`]
+    /// most recent of these are kept, the AST of the oldest is dropped again.
+    pub fn keep_reparsed_ast(&self, path: &str) {
+        let mut reparsed = self.reparsed_asts.borrow_mut();
+        if let Some(index) = reparsed.iter().position(|p| p == path) {
+            reparsed.remove(index);
+        }
+        reparsed.push_back(path.to_string());
+        while reparsed.len() > REPARSED_AST_CAPACITY {
+            let oldest = reparsed.pop_front().unwrap();
+            if let Some(file_info) = self.files.get(&oldest) {
+                Self::try_drop_ast(file_info);
+            }
+        }
     }
 
     pub fn get_file_info(&self, path: &str) -> Option<Rc<RefCell<FileInfo>>> {
@@ -1045,7 +1413,7 @@ impl FileMgr {
             self.files.get(path)
         };
         if let Some(file) = file {
-            if file.borrow().file_info_ast.borrow().text_document.is_none() {
+            if !file.borrow().file_info_ast.borrow().can_convert_ranges() {
                 file.borrow_mut().prepare_ast(session);
             }
             return file.borrow().text_range_to_range(range, session.sync_odoo.encoding);
@@ -1077,7 +1445,7 @@ impl FileMgr {
             self.files.get(path)
         };
         if let Some(file) = file {
-            if file.borrow().file_info_ast.borrow().text_document.is_none() {
+            if !file.borrow().file_info_ast.borrow().can_convert_ranges() {
                 file.borrow_mut().prepare_ast(session);
             }
             return file.borrow().std_range_to_range(range, session.sync_odoo.encoding);
@@ -1127,8 +1495,14 @@ impl FileMgr {
             let ep_mgr = session.sync_odoo.entry_point_mgr.borrow();
             let is_part_of_ep = ep_mgr.iter_all_but_public().any(|entry| uri.starts_with(&entry.borrow().path));
             drop(ep_mgr);
+            let was_built = file_info_mut.file_info_ast.borrow().ast.is_built();
             updated = file_info_mut.update(session, uri, content, version, !is_part_of_ep, force, is_untitled);
-            drop(file_info_mut);
+            // Unchanged content gave a dropped AST back (see `FileInfo::update`): bound it like a re-parse.
+            if !updated && !was_built && !file_info_mut.opened && !session.sync_odoo.config.file_cache()
+                && file_info_mut.file_info_ast.borrow().ast.is_built() {
+                    drop(file_info_mut);
+                    self.keep_reparsed_ast(uri);
+                }
         }
         (updated, return_info)
     }
@@ -1508,5 +1882,59 @@ export class Counter extends Component {
         assert!(parsed.syntax_diagnostics.is_empty());
         assert!(parsed.lint_diagnostics.is_empty());
         assert!(!parse_js_inner(COMPONENT, "/mod/static/src/x.js").decls.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod line_table_tests {
+    use super::*;
+
+    /// A dropped text keeps converting offsets and positions exactly as the text did, in every
+    /// encoding: 2-, 3- and 4-byte characters, adjacent runs of different widths, CRLF line
+    /// ends, no trailing newline, columns and lines past the end.
+    #[test]
+    fn line_table_matches_the_text_document() {
+        let texts = [
+            "",
+            "ascii = 1\nonly\n",
+            "ascii = 1\nстрока = 'é'\r\n😀 = 2\n\nlast",
+            "é中😀é中😀\n中文字符 = '😀😀'\r\n\r\nx = 'ééé' + \"😀\"\nend é",
+            "# -*- coding: utf-8 -*-\n# Комментарий: ünïcödé ✓\ndef f():\n    return 'Привет, мир 🌍'\n",
+            "😀\n",
+        ];
+        for text in texts {
+            let text_document = TextDocument::new(text.to_string(), -1);
+            let table = LineTable::new(&text_document);
+            let index = text_document.index();
+            let offsets = (0..=text.len() + 3).filter(|&offset| offset > text.len() || text.is_char_boundary(offset));
+            for offset in offsets {
+                for encoding in [PositionEncoding::Utf8, PositionEncoding::Utf16, PositionEncoding::Utf32] {
+                    assert_eq!(
+                        table.offset_to_position(offset as u32, encoding),
+                        FileInfo::offset_to_position_with_text_document(&text_document, offset as u32, encoding),
+                        "{text:?}: offset {offset}, {encoding:?}"
+                    );
+                }
+                if offset <= text.len() {
+                    let offset = TextSize::new(offset as u32);
+                    let line = index.line_index(offset);
+                    let prev_line = line.checked_sub(OneIndexed::new(1).unwrap()).unwrap_or(line);
+                    assert_eq!(table.prev_line_end(offset), index.line_end_exclusive(prev_line, text), "{text:?}: offset {offset:?}");
+                }
+            }
+            let lines = index.line_starts().len() as u32;
+            let longest = text.lines().map(|l| l.len()).max().unwrap_or(0) as u32;
+            for line in 0..=lines + 1 {
+                for character in 0..=longest + 3 {
+                    for encoding in [PositionEncoding::Utf8, PositionEncoding::Utf16, PositionEncoding::Utf32] {
+                        assert_eq!(
+                            table.position_to_offset(line, character, encoding),
+                            FileInfo::position_to_offset_with_text_document(&text_document, line, character, encoding),
+                            "{text:?}: {line}:{character}, {encoding:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

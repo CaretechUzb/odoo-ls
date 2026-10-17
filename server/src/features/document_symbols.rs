@@ -13,6 +13,7 @@ impl DocumentSymbolFeature {
 
     pub fn get_symbols(session: &mut SessionInfo, file_info: &Rc<RefCell<FileInfo>>) -> Option<DocumentSymbolResponse> {
         let mut results = vec![];
+        FileInfo::ensure_ast(file_info, session);
 
         // JS/TS: delegate to tsserver navtree.
         let is_js = matches!(
@@ -101,7 +102,7 @@ impl DocumentSymbolFeature {
             #[allow(deprecated)]
             deprecated: None,
             range: file_info.borrow().text_range_to_range(stmt_function_def.range(), session.sync_odoo.encoding),
-            selection_range: file_info.borrow().text_range_to_range(stmt_function_def.range(), session.sync_odoo.encoding),
+            selection_range: file_info.borrow().text_range_to_range(stmt_function_def.name.range, session.sync_odoo.encoding),
             children: Some(children_symbols)
         });
     }
@@ -122,7 +123,7 @@ impl DocumentSymbolFeature {
             #[allow(deprecated)]
             deprecated: None,
             range: file_info.borrow().text_range_to_range(stmt_class_def.range(), session.sync_odoo.encoding),
-            selection_range: file_info.borrow().text_range_to_range(stmt_class_def.range(), session.sync_odoo.encoding),
+            selection_range: file_info.borrow().text_range_to_range(stmt_class_def.name.range, session.sync_odoo.encoding),
             children: Some(children_symbols)
         });
     }

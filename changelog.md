@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Server
+
+- Call hierarchy (`textDocument/prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`) and type hierarchy (`textDocument/prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes`) for Python. Incoming calls of an Odoo model method include the calls on any record of the model (`self.method()`, `self.env['model'].method()`), from every override; the `super()` call of an override is not a caller. Subtypes include the Python subclasses and the classes that `_inherit` the model.
+- These requests are served from a graph index of symbols and their uses, written during the initial build into a SQLite file in the user cache directory (`odoo-ls/graph/<pid>.sqlite`, rebuilt at every start, removed at exit; files left by a process that crashed are removed at the next start). Until the initial build is done they answer the error `odoo-ls: indexing in progress`; if the index fails, they answer `odoo-ls: graph index unavailable: <reason>` for the rest of the session. Files being edited are scanned on the fly until they are validated again.
+- References to Python classes, functions and module- or class-level variables are read from the graph index once it is ready, which makes them faster on large projects, and also reach files the previous search did not scan. They now include calls through an imported name (`f()` after `from x import f`, where only the import line was reported) and hits in a package's `__init__.py` with their real range (instead of the package directory with an empty range). Without the index, references are searched as before.
+- `file_cache` now defaults to `false`. The AST and text of a Python file that is not opened are dropped once the file is built, and parsed again from disk when it is validated or when a feature needs it (the 64 most recent of these stay in memory). Ranges in a dropped file are converted without re-parsing it. Set `file_cache = true` to keep every AST in memory, as before.
+- The background pre-parser parses at most 64 modules ahead of the build, and also parses the files ahead of their validation. Together with the dropped ASTs, this lowers the peak memory of the initial indexing of a ~2000-module project from 2.5 GB to 1.6 GB with `file_cache = false` (graph index included).
+- Python files outside of the workspace (but not external) now drop their AST after validation too when `file_cache` is off.
+
 ## [1.6.0] - 2026/09/22 - JavaScript and performance
 
 ### Server

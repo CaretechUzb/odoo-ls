@@ -231,6 +231,12 @@ impl IndexedModule {
         inner
     }
 
+    /// The node at `index`, or None if the index is not one of this tree (e.g. it was handed
+    /// out by another parse of the file).
+    pub fn try_get_by_index<'ast>(&'ast self, index: NodeIndex) -> Option<AnyRootNodeRef<'ast>> {
+        self.index.get(index.as_u32()? as usize).copied()
+    }
+
     /// Returns the node at the given index.
     pub fn get_by_index<'ast>(&'ast self, index: NodeIndex) -> AnyRootNodeRef<'ast> {
         let index = index

@@ -1,4 +1,6 @@
 pub mod ast_utils;
+pub mod call_hierarchy;
+pub mod type_hierarchy;
 pub mod completion;
 pub mod declaration;
 pub mod definition;

@@ -4,6 +4,7 @@ use std::{
 
 use lsp_types::{Diagnostic, DiagnosticTag, Range, SymbolKind};
 use ruff_text_size::TextRange;
+use crate::core::symbols::DocString;
 
 use crate::{
     constants::{BuildStatus, BuildSteps, MissingDataSource, OYarn, PackageType, SymType, LAMBDA_NAME},
@@ -161,10 +162,13 @@ impl SymbolTable {
         }
     }
 
-    pub fn doc_string(&self, target: impl Into<SymbolKey>) -> Option<&String> {
+    /// Where the docstring of a class, function or variable comes from (the text itself is
+    /// read with `FeaturesUtils::doc_string_text`).
+    pub fn doc_string(&self, target: impl Into<SymbolKey>) -> Option<DocString> {
         match target.into() {
-            SymbolKey::Class(k) => self[k].doc_string.as_ref(),
-            SymbolKey::Function(k) => self[k].doc_string.as_ref(),
+            SymbolKey::Class(k) => self[k].doc_string,
+            SymbolKey::Function(k) => self[k].doc_string,
+            SymbolKey::Variable(k) => self[k].doc_string,
             _ => None
         }
     }
@@ -1638,6 +1642,31 @@ impl SymbolTable {
             }
         }
         res
+    }
+
+    /// Drops the spare capacity of the evaluation and argument vectors of `root` and of every
+    /// symbol declared in its body (classes, functions and variables, recursively; sub-files of
+    /// a package or module are not visited).
+    /// A Vec gets room for 4 elements on its first push, and most symbols hold a single
+    /// evaluation, so without this ~3/4 of the evaluation storage is never used.
+    pub fn shrink_evaluations(&mut self, root: SymbolKey) {
+        let mut stack = vec![root];
+        while let Some(key) = stack.pop() {
+            match key {
+                SymbolKey::File(f) => stack.extend(iter_symbol_keys(&self[f]).copied()),
+                SymbolKey::PythonPackage(p) => stack.extend(iter_symbol_keys(&self[p]).copied()),
+                SymbolKey::Module(m) => stack.extend(iter_symbol_keys(&self[m]).copied()),
+                SymbolKey::Class(c) => stack.extend(iter_symbol_keys(&self[c]).copied()),
+                SymbolKey::Function(f) => {
+                    let function = &mut self[f];
+                    function.evaluations.shrink_to_fit();
+                    function.args.shrink_to_fit();
+                    stack.extend(iter_symbol_keys(&self[f]).copied());
+                },
+                SymbolKey::Variable(v) => self[v].evaluations.shrink_to_fit(),
+                _ => {},
+            }
+        }
     }
 
     pub fn all_symbols(&self, target: SymbolKey) -> Vec<SymbolKey> {

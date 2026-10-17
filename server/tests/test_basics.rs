@@ -2,9 +2,8 @@
 
 use odoo_ls_server::utils::HashSet;
 use std::env;
-use odoo_ls_server::{core::evaluation::EvaluationValue};
+use odoo_ls_server::core::evaluation::{EvaluationValue, LiteralValue};
 use odoo_ls_server::utils::PathSanitizer;
-use ruff_python_ast::Expr;
 
 
 mod setup;
@@ -46,99 +45,99 @@ fn test_assigns() {
     assert!(st.name(a[0]) == "a");
     assert!(st.evaluations(a[0]).as_ref().unwrap().len() == 1);
     assert!(st.evaluations(a[0]).as_ref().unwrap()[0].value.is_some());
-    assert!(matches!(st.evaluations(a[0]).as_ref().unwrap()[0].value.as_ref().unwrap(), EvaluationValue::CONSTANT(c) if matches!(c.as_ref(), Expr::NumberLiteral(_))));
-    assert!(st.evaluations(a[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().is_number_literal_expr());
-    assert!(st.evaluations(a[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().as_number_literal_expr().unwrap().value.is_int());
-    assert!(st.evaluations(a[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().as_number_literal_expr().unwrap().value.as_int().unwrap().as_i32().unwrap() == 5);
+    assert!(matches!(st.evaluations(a[0]).as_ref().unwrap()[0].value.as_deref().unwrap(), EvaluationValue::CONSTANT(c) if matches!(c.value, LiteralValue::Number(_))));
+    assert!(st.evaluations(a[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_number().is_some());
+    assert!(st.evaluations(a[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_number().unwrap().is_int());
+    assert!(st.evaluations(a[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_number().unwrap().as_int().unwrap().as_i32().unwrap() == 5);
 
     let b = session.sync_odoo.get_symbol(path.as_str(), (&[], &["b"]), u32::MAX);
     assert!(b.len() == 1);
     assert!(st.name(b[0]) == "b");
     assert!(st.evaluations(b[0]).as_ref().unwrap().len() == 1);
     assert!(st.evaluations(b[0]).as_ref().unwrap()[0].value.is_some());
-    assert!(matches!(st.evaluations(b[0]).as_ref().unwrap()[0].value.as_ref().unwrap(), EvaluationValue::CONSTANT(c) if matches!(c.as_ref(), Expr::StringLiteral(_))));
-    assert!(st.evaluations(b[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().is_string_literal_expr());
-    assert!(st.evaluations(b[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().as_string_literal_expr().unwrap().value.to_str() == "test");
+    assert!(matches!(st.evaluations(b[0]).as_ref().unwrap()[0].value.as_deref().unwrap(), EvaluationValue::CONSTANT(c) if matches!(c.value, LiteralValue::Str(_))));
+    assert!(st.evaluations(b[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_str().is_some());
+    assert!(st.evaluations(b[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_str().unwrap() == "test");
 
     let c = session.sync_odoo.get_symbol(path.as_str(), (&[], &["c"]), u32::MAX);
     assert!(c.len() == 1);
     assert!(st.name(c[0]) == "c");
     assert!(st.evaluations(c[0]).as_ref().unwrap().len() == 1);
     assert!(st.evaluations(c[0]).as_ref().unwrap()[0].value.is_some());
-    assert!(matches!(st.evaluations(c[0]).as_ref().unwrap()[0].value.as_ref().unwrap(), EvaluationValue::CONSTANT(c) if matches!(c.as_ref(), Expr::NumberLiteral(_))));
-    assert!(st.evaluations(c[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().is_number_literal_expr());
-    assert!(st.evaluations(c[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().as_number_literal_expr().unwrap().value.is_float());
-    assert!(st.evaluations(c[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().as_number_literal_expr().unwrap().value.as_float().unwrap() == &6.66);
+    assert!(matches!(st.evaluations(c[0]).as_ref().unwrap()[0].value.as_deref().unwrap(), EvaluationValue::CONSTANT(c) if matches!(c.value, LiteralValue::Number(_))));
+    assert!(st.evaluations(c[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_number().is_some());
+    assert!(st.evaluations(c[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_number().unwrap().is_float());
+    assert!(st.evaluations(c[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_number().unwrap().as_float().unwrap() == &6.66);
 
     let d = session.sync_odoo.get_symbol(path.as_str(), (&[], &["d"]), u32::MAX);
     assert!(d.len() == 1);
     assert!(st.name(d[0]) == "d");
     assert!(st.evaluations(d[0]).as_ref().unwrap().len() == 1);
     assert!(st.evaluations(d[0]).as_ref().unwrap()[0].value.is_some());
-    assert!(matches!(st.evaluations(d[0]).as_ref().unwrap()[0].value.as_ref().unwrap(), EvaluationValue::CONSTANT(c) if matches!(c.as_ref(), Expr::BooleanLiteral(_))));
-    assert!(st.evaluations(d[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().is_boolean_literal_expr());
-    assert!(st.evaluations(d[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().as_boolean_literal_expr().unwrap().value);
+    assert!(matches!(st.evaluations(d[0]).as_ref().unwrap()[0].value.as_deref().unwrap(), EvaluationValue::CONSTANT(c) if matches!(c.value, LiteralValue::Bool(_))));
+    assert!(st.evaluations(d[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_bool().is_some());
+    assert!(st.evaluations(d[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_bool().unwrap());
 
     let e = session.sync_odoo.get_symbol(path.as_str(), (&[], &["e"]), u32::MAX);
     assert!(e.len() == 1);
     assert!(st.name(e[0]) == "e");
     assert!(st.evaluations(e[0]).as_ref().unwrap().len() == 1);
     assert!(st.evaluations(e[0]).as_ref().unwrap()[0].value.is_some());
-    assert!(matches!(st.evaluations(e[0]).as_ref().unwrap()[0].value.as_ref().unwrap(), EvaluationValue::CONSTANT(c) if matches!(c.as_ref(), Expr::BooleanLiteral(_))));
-    assert!(st.evaluations(e[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().is_boolean_literal_expr());
-    assert!(!st.evaluations(e[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().as_boolean_literal_expr().unwrap().value);
+    assert!(matches!(st.evaluations(e[0]).as_ref().unwrap()[0].value.as_deref().unwrap(), EvaluationValue::CONSTANT(c) if matches!(c.value, LiteralValue::Bool(_))));
+    assert!(st.evaluations(e[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_bool().is_some());
+    assert!(!st.evaluations(e[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_bool().unwrap());
 
     let f = session.sync_odoo.get_symbol(path.as_str(), (&[], &["f"]), u32::MAX);
     assert!(f.len() == 1);
     assert!(st.name(f[0]) == "f");
     assert!(st.evaluations(f[0]).as_ref().unwrap().len() == 1);
     assert!(st.evaluations(f[0]).as_ref().unwrap()[0].value.is_some());
-    assert!(matches!(st.evaluations(f[0]).as_ref().unwrap()[0].value.as_ref().unwrap(), EvaluationValue::CONSTANT(c) if matches!(c.as_ref(), Expr::NoneLiteral(_))));
-    assert!(st.evaluations(f[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().is_none_literal_expr());
+    assert!(matches!(st.evaluations(f[0]).as_ref().unwrap()[0].value.as_deref().unwrap(), EvaluationValue::CONSTANT(c) if matches!(c.value, LiteralValue::None)));
+    assert!(st.evaluations(f[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().value == LiteralValue::None);
 
     let g = session.sync_odoo.get_symbol(path.as_str(), (&[], &["g"]), u32::MAX);
     assert!(g.len() == 1);
     assert!(st.name(g[0]) == "g");
     assert!(st.evaluations(g[0]).as_ref().unwrap().len() == 1);
     assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.is_some());
-    assert!(matches!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_ref().unwrap(), EvaluationValue::LIST(_)));
-    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_list().len() == 3);
-    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_list()[0].is_number_literal_expr());
-    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_list()[0].as_number_literal_expr().unwrap().value.as_int().unwrap().as_i32().unwrap() == 1);
-    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_list()[1].is_number_literal_expr());
-    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_list()[1].as_number_literal_expr().unwrap().value.as_int().unwrap().as_i32().unwrap() == 2);
-    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_list()[2].is_number_literal_expr());
-    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_list()[2].as_number_literal_expr().unwrap().value.as_int().unwrap().as_i32().unwrap() == 3);
+    assert!(matches!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_deref().unwrap(), EvaluationValue::LIST(_)));
+    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_list().len() == 3);
+    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_list()[0].as_number().is_some());
+    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_list()[0].as_number().unwrap().as_int().unwrap().as_i32().unwrap() == 1);
+    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_list()[1].as_number().is_some());
+    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_list()[1].as_number().unwrap().as_int().unwrap().as_i32().unwrap() == 2);
+    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_list()[2].as_number().is_some());
+    assert!(st.evaluations(g[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_list()[2].as_number().unwrap().as_int().unwrap().as_i32().unwrap() == 3);
 
     let h = session.sync_odoo.get_symbol(path.as_str(), (&[], &["h"]), u32::MAX);
     assert!(h.len() == 1);
     assert!(st.name(h[0]) == "h");
     assert!(st.evaluations(h[0]).as_ref().unwrap().len() == 1);
     assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.is_some());
-    assert!(matches!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_ref().unwrap(), EvaluationValue::TUPLE(_)));
-    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_tuple().len() == 3);
-    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_tuple()[0].is_number_literal_expr());
-    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_tuple()[0].as_number_literal_expr().unwrap().value.as_int().unwrap().as_i32().unwrap() == 1);
-    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_tuple()[1].is_number_literal_expr());
-    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_tuple()[1].as_number_literal_expr().unwrap().value.as_int().unwrap().as_i32().unwrap() == 2);
-    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_tuple()[2].is_number_literal_expr());
-    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_tuple()[2].as_number_literal_expr().unwrap().value.as_int().unwrap().as_i32().unwrap() == 3);
+    assert!(matches!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_deref().unwrap(), EvaluationValue::TUPLE(_)));
+    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_tuple().len() == 3);
+    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_tuple()[0].as_number().is_some());
+    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_tuple()[0].as_number().unwrap().as_int().unwrap().as_i32().unwrap() == 1);
+    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_tuple()[1].as_number().is_some());
+    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_tuple()[1].as_number().unwrap().as_int().unwrap().as_i32().unwrap() == 2);
+    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_tuple()[2].as_number().is_some());
+    assert!(st.evaluations(h[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_tuple()[2].as_number().unwrap().as_int().unwrap().as_i32().unwrap() == 3);
 
     let i = session.sync_odoo.get_symbol(path.as_str(), (&[], &["i"]), u32::MAX);
     assert!(i.len() == 1);
     assert!(st.name(i[0]) == "i");
     assert!(st.evaluations(i[0]).as_ref().unwrap().len() == 1);
     assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.is_some());
-    assert!(matches!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_ref().unwrap(), EvaluationValue::DICT(_)));
-    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_dict().len() == 2);
-    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_dict()[0].0.is_string_literal_expr());
-    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_dict()[0].0.as_string_literal_expr().unwrap().value.to_str() == "a");
-    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_dict()[0].1.is_number_literal_expr());
-    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_dict()[0].1.as_number_literal_expr().unwrap().value.as_int().unwrap().as_i32().unwrap() == 1);
-    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_dict()[1].0.is_string_literal_expr());
-    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_dict()[1].0.as_string_literal_expr().unwrap().value.to_str() == "b");
-    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_dict()[1].1.is_number_literal_expr());
-    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_dict()[1].1.as_number_literal_expr().unwrap().value.as_int().unwrap().as_i32().unwrap() == 2);
+    assert!(matches!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_deref().unwrap(), EvaluationValue::DICT(_)));
+    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_dict().len() == 2);
+    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_dict()[0].0.as_str().is_some());
+    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_dict()[0].0.as_str().unwrap() == "a");
+    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_dict()[0].1.as_number().is_some());
+    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_dict()[0].1.as_number().unwrap().as_int().unwrap().as_i32().unwrap() == 1);
+    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_dict()[1].0.as_str().is_some());
+    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_dict()[1].0.as_str().unwrap() == "b");
+    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_dict()[1].1.as_number().is_some());
+    assert!(st.evaluations(i[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_dict()[1].1.as_number().unwrap().as_int().unwrap().as_i32().unwrap() == 2);
 
     let j = session.sync_odoo.get_symbol(path.as_str(), (&[], &["j"]), u32::MAX);
     assert!(j.len() == 1);
@@ -328,9 +327,9 @@ fn test_sections() {
             let evaluations = st.evaluations(sym);
             let eval = evaluations.as_ref().unwrap();
             assert_eq!(eval.len(), 1);  // Check that each symbol has one evaluation
-            let value = eval[0].value.as_ref().unwrap();
-            assert!(matches!(value, EvaluationValue::CONSTANT(c) if matches!(c.as_ref(), Expr::NumberLiteral(_)))); // Check that the evaluation is a num literal
-            let number = value.as_constant().as_number_literal_expr().unwrap().value.as_int().unwrap();
+            let value = eval[0].value.as_deref().unwrap();
+            assert!(matches!(value, EvaluationValue::CONSTANT(c) if matches!(c.value, LiteralValue::Number(_)))); // Check that the evaluation is a num literal
+            let number = value.as_constant().as_number().unwrap().as_int().unwrap();
             number.as_i32().unwrap()
         })
         .collect::<HashSet<_>>(), values); // Check evaluation values

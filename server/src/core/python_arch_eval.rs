@@ -1,5 +1,6 @@
 use crate::core::build_scheduler::BuildScheduler;
 use crate::core::evaluation_utils::DeepFieldEvalWalker;
+use crate::core::graph_recorder;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::vec;
@@ -128,6 +129,8 @@ impl PythonArchEval {
             PythonArchEvalHooks::on_function_eval(session, &self.entry_point, f);
         }
         session.st_mut().set_build_status(self.sym_stack[0].unwrap_buildable_key(), BuildSteps::ARCH_EVAL, BuildStatus::DONE);
+        session.st_mut().shrink_evaluations(self.sym_stack[0]);
+        if self.file_mode && !session.st().is_external(self.sym_stack[0]) { graph_recorder::on_file_arch_eval(session, self.file); }
         if session.st().is_external(self.sym_stack[0]) && (!self.file_mode  || !file_info_rc.borrow().opened) {
             if self.file_mode {
                 let file_path = session.st().file_path(self.file).to_string();
@@ -136,6 +139,18 @@ impl PythonArchEval {
         } else {
             if self.file_mode {
                 BuildScheduler::queue(session, self.sym_stack[0].unwrap_buildable_key());
+                if !session.sync_odoo.config.file_cache() {
+                    if session.sync_odoo.pre_parse_cache().is_some() {
+                        // Initial build: validation comes much later and the pre-parser parses
+                        // the file again ahead of it. Do not hold the AST until then.
+                        FileMgr::drop_ast(session, &file_info_rc);
+                    } else {
+                        // A rebuild validates the file right after: keep its AST for that, among
+                        // the few re-parsed ASTs kept (a large rebuild drops the oldest).
+                        let path = session.st().file_path(self.file).to_string();
+                        session.sync_odoo.get_file_mgr().borrow().keep_reparsed_ast(&path);
+                    }
+                }
             }
         }
     }

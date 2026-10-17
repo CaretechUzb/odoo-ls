@@ -1,7 +1,7 @@
 use crate::{core::symbols::storage::FileContentParent, utils::HashMap};
 
 use lsp_types::Diagnostic;
-use ruff_python_ast::{AtomicNodeIndex, Expr, ExprCall};
+use ruff_python_ast::{AtomicNodeIndex, ExprCall};
 use ruff_text_size::{TextRange, TextSize};
 
 use crate::{constants::{BuildStatus, BuildSteps, OYarn}, core::{evaluation::{Evaluation}, file_mgr::NoqaInfo, symbols::{SymbolTable, symbol_keys::{FunctionKey, SymbolKey, VariableKey, Wk}}}, oyarn, threads::SessionInfo};
@@ -24,9 +24,12 @@ pub enum ArgumentType {
 pub struct Argument {
     pub symbol: Wk<VariableKey>,
     //other informations about arg
-    pub default_value: Option<Evaluation>,
+    /// Whether the parameter declares a default value (the value itself is never evaluated).
+    pub has_default: bool,
     pub arg_type: ArgumentType,
-    pub annotation: Option<Box<Expr>>,
+    /// Range of the annotation in the file of the function declaring this parameter. Only hover
+    /// reads it, by parsing that expression again (see `FeaturesUtils::argument_presentation`).
+    pub annotation: Option<TextRange>,
 }
 
 #[derive(Debug)]
@@ -35,7 +38,7 @@ pub struct FunctionSymbol {
     pub is_external: bool,
     pub is_static: bool,
     pub is_property: bool,
-    pub doc_string: Option<String>,
+    pub doc_string: Option<crate::core::symbols::DocString>,
     pub node_index: AtomicNodeIndex,
     pub diagnostics: HashMap<BuildSteps, Vec<Diagnostic>>, //only temporary used for CLASS and FUNCTION to be collected like others are stored on FileInfo
     pub evaluations: Vec<Evaluation>, //Vec, because sometimes a single allocation can be ambiguous, like ''' a = "5" if X else 5 '''

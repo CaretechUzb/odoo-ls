@@ -4,6 +4,7 @@ use ruff_text_size::TextRange;
 use tracing::{info, warn};
 use crate::core::import_resolver::manual_import;
 use crate::core::symbols::storage::SymbolTable;
+use crate::core::symbols::DocString;
 use crate::core::symbols::symbol_keys::{ClassKey, SourceFileKey, SymbolKey};
 use crate::threads::SessionInfo;
 use crate::S;
@@ -74,13 +75,13 @@ static arch_class_hooks: LazyLock<Vec<PythonArchClassHook>> = LazyLock::new(|| {
             symbol_table.add_new_variable(class, "cr", range);
             // ----------- env.uid ------------
             let uid_sym = symbol_table.add_new_variable(class, "uid", range);
-            symbol_table[uid_sym].doc_string = Some(S!("The current user id (for access rights checks)"));
+            symbol_table[uid_sym].doc_string = Some(DocString::Static("The current user id (for access rights checks)"));
             // ----------- env.context ------------
             let context_sym = symbol_table.add_new_variable(class, "context", range);
-            symbol_table[context_sym].doc_string = Some(S!("The current context"));
+            symbol_table[context_sym].doc_string = Some(DocString::Static("The current context"));
             // ----------- env.su ------------
             let su_sym = symbol_table.add_new_variable(class, "su", range);
-            symbol_table[su_sym].doc_string = Some(S!("whether in superuser mode"));
+            symbol_table[su_sym].doc_string = Some(DocString::Static("whether in superuser mode"));
             // ----------- env.registry -----------
             let _ = symbol_table.add_new_variable(class, "registry", range);
         }

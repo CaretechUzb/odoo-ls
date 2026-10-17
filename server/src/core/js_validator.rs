@@ -74,6 +74,7 @@ impl JsValidator {
         }
         self.validate_import_scope(session, &js_imports, &mut diagnostics);
         file_info.replace_diagnostics(DiagnosticSource::JS_VALIDATION, diagnostics);
+        file_info.set_diagnostics_evictable();
         file_info.publish_diagnostics(session);
         session.st_mut().set_build_status(self.js_symbol.into(), BuildSteps::VALIDATION, BuildStatus::DONE);
     }

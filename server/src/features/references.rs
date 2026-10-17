@@ -2,6 +2,9 @@ use crate::constants::{BuildSteps, PackageType};
 use crate::core::build_scheduler::BuildScheduler;
 use crate::core::evaluation::{Evaluation, EvaluationSymbolPtr};
 use crate::core::file_mgr::Ast;
+use crate::core::graph_index;
+use crate::core::graph_recorder::{self, PendingEdge};
+use crate::features::call_hierarchy;
 use crate::core::symbols::Dependencies;
 use crate::core::symbols::ModuleSymbol;
 use crate::core::symbols::storage::XmlDataParent;
@@ -65,6 +68,10 @@ impl ReferenceFeature {
         }
         //We want to search for references of the definition, and not the current symbol. Let's use definition feature for that
         BuildScheduler::process_rebuilds(session, false);
+        // Before the borrow held by the match below
+        if !FileInfo::ensure_ast(file_info, session) {
+            return None;
+        }
         let def_sources = match file_info.borrow().file_info_ast.borrow().ast {
             Ast::PythonAst(_) => {
                 GotoUtils::get_symbols(session, GotoRequest::Definition, file_symbol, file_info, line, character)
@@ -141,13 +148,19 @@ impl ReferenceFeature {
                             }
                         }
                     }
+                    // Python uses come from the graph index when it can serve this target.
+                    let indexed = ReferenceFeature::indexed_python_references(session, definition_source);
+                    let python_from_index = indexed.is_some();
+                    locations.extend(indexed.unwrap_or_default());
                     for &file in files_to_check.iter() {
                         let Some(dep_file_info) = session.sync_odoo.get_file_mgr().borrow().get_file_info(session.st().path(file)) else {
                             continue;
                         };
                         match file {
                             SourceFileKey::File(_) | SourceFileKey::PythonPackage(_) | SourceFileKey::Module(_) => {
-                                locations.extend(ReferenceFeature::references_in_file(session, file, &dep_file_info, &ReferenceTarget::Symbol(definition_source)));
+                                if !python_from_index {
+                                    locations.extend(ReferenceFeature::references_in_file(session, file, &dep_file_info, &ReferenceTarget::Symbol(definition_source)));
+                                }
                             },
                             SourceFileKey::XmlFile(xml_file) => {
                                 let data = dep_file_info.borrow().file_info_ast.borrow().text_document.as_ref()?.contents().to_string();
@@ -365,12 +378,14 @@ impl ReferenceFeature {
     }
 
     fn references_in_file(session: &mut SessionInfo, file_symbol: SourceFileKey, file_info: &Rc<RefCell<FileInfo>>, reference_target: &ReferenceTarget) -> Vec<Location> {
+        FileInfo::ensure_ast(file_info, session);
         let file_info_ast = file_info.borrow().file_info_ast.clone();
         if file_info_ast.borrow().get_stmts().is_none() { //filter modules with only manifest or file outside of workspace
             return vec![];
         }
         let mut visitor = ReferenceVisitor {
             sym_stack: vec![],
+            build_functions: false,
         };
         session.sync_odoo.evaluation_locations = vec![];
         session.sync_odoo.evaluation_search = Some(reference_target.clone());
@@ -386,12 +401,97 @@ impl ReferenceFeature {
         locations
     }
 
+    /// Legacy reference scan of one Python file (re-evaluates the file). Used by tests to
+    /// check the graph index against it.
+    pub fn scan_file_references(session: &mut SessionInfo, file: SourceFileKey, target: SymbolKey) -> Vec<Location> {
+        let (file_info, _) = FileMgr::get_or_recreate_file_info(session, file);
+        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+            file_info.borrow_mut().prepare_ast(session);
+        }
+        ReferenceFeature::references_in_file(session, file, &file_info, &ReferenceTarget::Symbol(target))
+    }
+
+    /// Python uses of `target` from the graph index: REF and CALL edges to it (plus model-name
+    /// strings for a model class), with the rows of files queued for a rebuild replaced by a
+    /// scan of those files. None when the index cannot serve the target (not ready, disabled,
+    /// function-local symbol, no node), so the caller scans files as before.
+    fn indexed_python_references(session: &mut SessionInfo, target: SymbolKey) -> Option<Vec<Location>> {
+        if !matches!(target, SymbolKey::Class(_) | SymbolKey::Function(_) | SymbolKey::Variable(_))
+            || call_hierarchy::check_index(session).is_err()
+            || graph_recorder::target_class(session.st(), target) != graph_recorder::TargetClass::Indexed
+            || graph_recorder::is_import_alias(session.st(), target) {
+            return None;
+        }
+        let info = call_hierarchy::node_of_symbol(session, target)?;
+        let node = call_hierarchy::node_row(session, &info.path, &info.qualname, info.occurrence).ok()??;
+        let model = match target {
+            SymbolKey::Class(class) => session.st()[class]._model.as_ref().map(|m| m.name.to_string()),
+            _ => None,
+        };
+        let rows = session.sync_odoo.graph_index.as_ref()?.references(node.id, model.as_deref());
+        let rows = match rows {
+            Ok(rows) => rows,
+            Err(e) => {
+                call_hierarchy::db_failure(session, e);
+                return None;
+            }
+        };
+        // a use names its target, or the model for a model-name string
+        let name = session.st().name(target).to_string();
+        let names: Vec<&str> = std::iter::once(name.as_str()).chain(model.as_deref()).collect();
+        let (dirty_paths, dirty_edges) = call_hierarchy::dirty_file_edges(session, &names);
+        let mut sites: Vec<(String, u32, u32)> = rows.into_iter()
+            .filter(|site| !dirty_paths.contains(&site.path))
+            .map(|site| (site.path, site.start, site.end))
+            .collect();
+        for edge in dirty_edges {
+            let matches = match edge.kind {
+                graph_index::EDGE_REF | graph_index::EDGE_CALL => edge.dst == Some(target),
+                graph_index::EDGE_MODEL_REF => model.is_some() && edge.dst_model.as_deref() == model.as_deref(),
+                _ => false,
+            };
+            if matches && let Some(file) = session.st().get_file(edge.src) {
+                sites.push((session.st().file_path(file).to_string(), edge.start, edge.end));
+            }
+        }
+        // One location per (file, start), keeping the innermost expression, like references_in_file.
+        sites.sort();
+        sites.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+        let mut ranges = call_hierarchy::RangeConverter::default();
+        Some(sites.into_iter().map(|(path, start, end)| Location {
+            uri: FileMgr::pathname2uri(&path),
+            range: ranges.range(session, &path, start, end),
+        }).collect())
+    }
+
+    /// Graph edges of `file`, recorded by a reference walk that is not persisted. Used for files
+    /// whose indexed rows are stale (still queued for a rebuild).
+    pub(crate) fn graph_scan_file(session: &mut SessionInfo, file: SourceFileKey) -> Vec<PendingEdge> {
+        let path = session.st().file_path(file).to_string();
+        let Some(file_info) = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path) else {
+            return vec![];
+        };
+        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+            file_info.borrow_mut().prepare_ast(session);
+        }
+        let file_info_ast = file_info.borrow().file_info_ast.clone();
+        let file_info_ast = file_info_ast.borrow();
+        let Some(stmts) = file_info_ast.get_stmts() else {
+            return vec![];
+        };
+        graph_recorder::transient_scan(session, file, |session| {
+            let mut visitor = ReferenceVisitor { sym_stack: vec![], build_functions: true };
+            visitor.browse_file(session, file, stmts);
+        })
+    }
+
     //the name inside the manifest will be different, so we only search for the key in this module and return the location with the range
     fn find_name_in_manifest(session: &mut SessionInfo, module: ModuleKey) -> Vec<Location> {
         let mut locations = Vec::new();
         let manifest = Path::new(&session.st()[module].path).join("__manifest__.py").sanitize();
         let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&manifest).clone();
         if let Some(file_info) = file_info {
+            FileInfo::ensure_ast(&file_info, session);
             let file_info_ast = file_info.borrow().file_info_ast.clone();
             let file_info_ast = file_info_ast.borrow();
             if let Some(stmts) = file_info_ast.get_stmts() {
@@ -423,6 +523,7 @@ impl ReferenceFeature {
         let manifest = Path::new(&session.st()[module].path).join("__manifest__.py").sanitize();
         let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&manifest).clone();
         if let Some(file_info) = file_info {
+            FileInfo::ensure_ast(&file_info, session);
             let file_info_ast = file_info.borrow().file_info_ast.clone();
             let file_info_ast = file_info_ast.borrow();
             if let Some(stmts) = file_info_ast.get_stmts() {
@@ -457,6 +558,9 @@ impl ReferenceFeature {
 
 struct ReferenceVisitor {
     sym_stack: Vec<SymbolKey>,
+    /// Build function bodies (ARCH, ARCH_EVAL) before visiting them, like the validator does.
+    /// Set for graph scans of files whose validation is still queued.
+    build_functions: bool,
 }
 
 impl ReferenceVisitor {
@@ -472,6 +576,13 @@ impl ReferenceVisitor {
                 Stmt::FunctionDef(f) => {
                     let sym = session.st().get_positioned_symbol(*self.sym_stack.last().unwrap(), &f.name, &f.range);
                     if let Some(sym) = sym {
+                        if self.build_functions {
+                            for step in [BuildSteps::ARCH, BuildSteps::ARCH_EVAL] {
+                                if session.st().ready_for_step(sym.unwrap_buildable_key(), step) {
+                                    BuildScheduler::build_now(session, sym.unwrap_buildable_key(), step);
+                                }
+                            }
+                        }
                         self.sym_stack.push(sym);
                         self.visit_vec_stmt(session, &f.body);
                         self.sym_stack.pop();
@@ -536,6 +647,9 @@ impl ReferenceVisitor {
     fn _resolve_import(&mut self, session: &mut SessionInfo, _from_stmt: Option<&Identifier>, name_aliases: &[Alias], _level: Option<u32>, _range: &TextRange) {
         let file_symbol = session.st().get_file(self.sym_stack[0]);
         let file_symbol = file_symbol.expect("file symbol not found");
+        for alias in name_aliases.iter() {
+            graph_recorder::on_import_alias(session, *self.sym_stack.last().unwrap(), alias, false);
+        }
         let Some(eval_search) = session.sync_odoo.evaluation_search.clone() else {
             return;
         };

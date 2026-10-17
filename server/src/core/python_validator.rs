@@ -22,6 +22,7 @@ use super::evaluation::{Evaluation, EvaluationSymbolPtr, EvaluationSymbolWeak, E
 use super::file_mgr::{FileInfo, FileMgr};
 use super::import_resolver::manual_import;
 use super::python_arch_eval::PythonArchEval;
+use super::graph_recorder;
 
 #[derive(Debug)]
 pub struct PythonValidator {
@@ -105,18 +106,20 @@ impl PythonValidator {
                 let Some(parent_file) = session.st().get_file(symbol) else {
                     panic!("Parent file not found on validating function")
                 };
-                if file_info_rc.borrow().file_info_ast.borrow().text_hash != session.st_mut().get_processed_text_hash(parent_file) {
-                    session.st_mut().set_build_status(symbol.unwrap_buildable_key(), BuildSteps::VALIDATION, BuildStatus::INVALID);
+                if !session.st().ready_for_step(f.into(), BuildSteps::VALIDATION) {
                     return;
                 }
-                if !session.st().ready_for_step(f.into(), BuildSteps::VALIDATION) {
+                // Re-acquire a dropped AST first: the text it is parsed from is the one to compare
+                // with the text the symbols (and their node indexes) were built from.
+                if !file_info_rc.borrow().file_info_ast.borrow().ast.is_built() {
+                    file_info_rc.borrow_mut().prepare_ast(session);
+                }
+                if file_info_rc.borrow().file_info_ast.borrow().text_hash != session.st().get_processed_text_hash(parent_file) {
+                    session.st_mut().set_build_status(symbol.unwrap_buildable_key(), BuildSteps::VALIDATION, BuildStatus::INVALID);
                     return;
                 }
                 self.diagnostics = vec![];
                 session.st_mut().set_build_status(symbol.unwrap_buildable_key(), BuildSteps::VALIDATION, BuildStatus::IN_PROGRESS);
-                if !file_info_rc.borrow().file_info_ast.borrow().ast.is_built() {
-                    file_info_rc.borrow_mut().prepare_ast(session);
-                }
                 let file_info = file_info_rc.borrow();
                 let file_info_ast_rc = file_info.file_info_ast.clone();
                 let file_info_ast = file_info_ast_rc.borrow();
@@ -124,24 +127,18 @@ impl PythonValidator {
                 if let Some(indexed_module) = &file_info_ast.ast.as_py_ast().indexed_module {
                     let func_index = session.st()[f].node_index.load();
                     if func_index != NodeIndex::NONE {
-                        let stmt = indexed_module.get_by_index(func_index);
-                        let body = match stmt {
-                            AnyRootNodeRef::Stmt(Stmt::FunctionDef(s)) => {
-                                &s.body
-                            },
-                            _ => {panic!("Wrong statement in validation ast extraction {} ", SymType::FUNCTION)}
+                        let Some(AnyRootNodeRef::Stmt(Stmt::FunctionDef(func_stmt))) = indexed_module.try_get_by_index(func_index) else {
+                            // Not the tree the function was built from: fail closed.
+                            warn!("node index of {} does not address its definition", session.st().name(symbol));
+                            session.st_mut().set_build_status(symbol.unwrap_buildable_key(), BuildSteps::VALIDATION, BuildStatus::INVALID);
+                            return;
                         };
                         let old_noqa = session.current_noqa.clone();
                         session.current_noqa = session.st().get_noqas(symbol);
-                        self.validate_body(session, body);
+                        self.validate_body(session, &func_stmt.body);
                         session.current_noqa = old_noqa;
-                        match stmt {
-                            AnyRootNodeRef::Stmt(Stmt::FunctionDef(_)) => {
-                                let f = self.sym_stack[0].unwrap_function_key();
-                                session.st_mut()[f].diagnostics.insert(BuildSteps::VALIDATION, self.diagnostics.clone());
-                            },
-                            _ => {panic!("Wrong statement in validation ast extraction {} ", SymType::FUNCTION)}
-                        }
+                        let f = self.sym_stack[0].unwrap_function_key();
+                        session.st_mut()[f].diagnostics.insert(BuildSteps::VALIDATION, self.diagnostics.clone());
                     }
                 } else {
                     warn!("no ast found on file info");
@@ -153,36 +150,33 @@ impl PythonValidator {
         session.st_mut().set_build_status(symbol.unwrap_buildable_key(), BuildSteps::VALIDATION, BuildStatus::DONE);
         if matches!(symbol.typ(), SymType::FILE | SymType::PACKAGE(_)) {
             if !session.st().in_workspace(symbol) {
-                if !session.st().is_external(symbol) {
-                    return;
-                }
-                let file_info = self.file_info.as_ref().unwrap();
-                if !file_info.borrow().opened { // Never delete opened files
-                    let file = symbol.as_source_file_key().unwrap();
-                    let file_path = session.sync_odoo.symbol_table.file_path(file).to_string();
-                    FileMgr::delete_file_path(session, &file_path);
+                if session.st().is_external(symbol) {
+                    let file_info = self.file_info.as_ref().unwrap();
+                    if !file_info.borrow().opened { // Never delete opened files
+                        let file = symbol.as_source_file_key().unwrap();
+                        let file_path = session.sync_odoo.symbol_table.file_path(file).to_string();
+                        FileMgr::delete_file_path(session, &file_path);
+                    }
                 }
             } else {
-                self.file_info.as_ref().unwrap().borrow_mut().publish_diagnostics(session);
-            }
-            if !session.sync_odoo.config.file_cache() {
-                if let SymbolKey::Module(m) = symbol {
-                    let manifest_path = Path::new(&session.st()[m].path).join("__manifest__.py");
-                    if let Some(manifest_file) = session.sync_odoo.get_file_mgr().borrow().get_file_info(&manifest_path.sanitize_cow())
-                        && !manifest_file.borrow().opened {
-                            let manifest_file = manifest_file.borrow();
-                            manifest_file.file_info_ast.borrow_mut().ast.as_py_ast_mut().indexed_module = None;
-                            manifest_file.file_info_ast.borrow_mut().text_document = None;
-                            manifest_file.file_info_ast.borrow_mut().text_hash = 0;
-                        }
+                let mut file_info = self.file_info.as_ref().unwrap().borrow_mut();
+                // Plain Python files: their diagnostics may leave RAM once published. Packages
+                // and modules (`__init__.py`) keep theirs: validating them again means reloading
+                // the package.
+                if matches!(symbol, SymbolKey::File(_)) {
+                    file_info.set_diagnostics_evictable();
                 }
-                if let Some(file) = self.file_info.as_ref()
-                    && ! file.borrow().opened {
-                        let f = file.borrow();
-                        f.file_info_ast.borrow_mut().ast.as_py_ast_mut().indexed_module = None;
-                        f.file_info_ast.borrow_mut().text_document = None;
-                        f.file_info_ast.borrow_mut().text_hash = 0;
-                    }
+                file_info.publish_diagnostics(session);
+            }
+            if let SymbolKey::Module(m) = symbol {
+                let manifest_path = Path::new(&session.st()[m].path).join("__manifest__.py");
+                let manifest_file = session.sync_odoo.get_file_mgr().borrow().get_file_info(&manifest_path.sanitize_cow());
+                if let Some(manifest_file) = manifest_file {
+                    FileMgr::drop_ast(session, &manifest_file);
+                }
+            }
+            if let Some(file) = self.file_info.as_ref() {
+                FileMgr::drop_ast(session, file);
             }
         }
     }
@@ -202,7 +196,9 @@ impl PythonValidator {
                         if session.st().ready_for_step(sym.unwrap_buildable_key(), BuildSteps::VALIDATION) {
                             if let Some(python_buildable) = sym.as_python_buildable() {
                                 let mut v = PythonValidator::new(session.st(), self.entry_point.clone(), python_buildable);
+                                graph_recorder::begin_unit(session, sym);
                                 v.validate(session);
+                                graph_recorder::end_unit(session, sym);
                             }
                         } else if session.st().build_status(sym.unwrap_buildable_key(), BuildSteps::VALIDATION) == BuildStatus::IN_PROGRESS {
                             panic!("cyclic validation detected... Aborting");
@@ -307,6 +303,7 @@ impl PythonValidator {
             if alias.name.id == "*" {
                 continue;
             }
+            graph_recorder::on_import_alias(session, *self.sym_stack.last().unwrap(), alias, true);
             let Some(current_module) = self.current_module else {
                 continue;
             };
@@ -362,12 +359,14 @@ impl PythonValidator {
     }
 
     fn visit_ann_assign(&mut self, session: &mut SessionInfo, assign: &StmtAnnAssign) {
+        graph_recorder::on_assign_targets(session, *self.sym_stack.last().unwrap(), std::slice::from_ref(&assign.target), &assign.range.start());
         if let Some(value) = assign.value.as_ref() {
             self.validate_expr(session, value, &assign.range.start());
         }
     }
 
     fn visit_assign(&mut self, session: &mut SessionInfo, assign: &StmtAssign) {
+        graph_recorder::on_assign_targets(session, *self.sym_stack.last().unwrap(), &assign.targets, &assign.range.start());
         self.validate_expr(session, &assign.value, &assign.range.start());
     }
 
@@ -420,7 +419,7 @@ impl PythonValidator {
                                 .and_then(|field_type_var| session.st().evaluations(*field_type_var))
                                 .and_then(|evals| evals.first().cloned())
                                 .and_then(|eval| eval.value.clone())
-                                .and_then(|value| value.as_string_literal().map(|s| s.value.to_string())) else {
+                                .and_then(|value| value.as_str().map(|s| s.to_string())) else {
                                 break 'related_check;
                             };
                             let found_same_type_match = syms.iter().any(|&sym| {
@@ -439,7 +438,7 @@ impl PythonValidator {
                                         .and_then(|field_type_var| session.st().evaluations(*field_type_var))
                                         .and_then(|evals| evals.first().cloned())
                                         .and_then(|eval| eval.value.clone())
-                                        .map(|value| value.as_string_literal().is_some_and(|s| s.value.to_str() == field_type))
+                                        .map(|value| value.as_str().is_some_and(|s| s == field_type))
                                         .unwrap_or(false)
                                 })
                             });
@@ -654,21 +653,21 @@ impl PythonValidator {
                 if let Some(inherit_value) = inherit_value {
                     match inherit_value {
                         EvaluationValue::CONSTANT(c) => {
-                            if let Expr::StringLiteral(s) = c.as_ref() {
-                                self._check_module_dependency(session, class, s.value.to_str(), &s.range());
+                            if let Some(s) = c.as_str() {
+                                self._check_module_dependency(session, class, s, &c.range);
                             }
                         },
                         EvaluationValue::LIST(l) => {
-                            for e in l {
-                                if let Expr::StringLiteral(s) = e {
-                                    self._check_module_dependency(session, class, s.value.to_str(), &s.range());
+                            for e in l.iter() {
+                                if let Some(s) = e.as_str() {
+                                    self._check_module_dependency(session, class, s, &e.range);
                                 }
                             }
                         },
                         EvaluationValue::TUPLE(l) => {
-                            for e in l {
-                                if let Expr::StringLiteral(s) = e {
-                                    self._check_module_dependency(session, class, s.value.to_str(), &s.range());
+                            for e in l.iter() {
+                                if let Some(s) = e.as_str() {
+                                    self._check_module_dependency(session, class, s, &e.range);
                                 }
                             }
                         },
@@ -732,8 +731,8 @@ impl PythonValidator {
                     match inherits_value {
                         EvaluationValue::DICT(d) => {
                             for (key, _value) in d.iter() {
-                                if let Expr::StringLiteral(s) = key {
-                                    self._check_module_dependency(session, class, s.value.to_str(), &s.range());
+                                if let Some(s) = key.as_str() {
+                                    self._check_module_dependency(session, class, s, &key.range);
                                 }
                             }
                         },

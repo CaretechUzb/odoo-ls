@@ -21,6 +21,7 @@ use crate::core::python_utils;
 use crate::core::symbols::Buildable;
 use crate::core::symbols::symbol_keys::{FunctionKey, PythonBuildableSymbolKey, SourceFileKey, SymbolKey};
 use crate::core::symbols::storage::SymbolTable;
+use crate::core::symbols::DocString;
 use crate::threads::SessionInfo;
 use crate::oyarn;
 
@@ -84,7 +85,7 @@ impl PythonArchBuilder {
             ModuleSymbol::load_module_arch(m, session, odoo_addons);
         }
         let (file_info_rc, _) = FileMgr::get_or_recreate_file_info(session, self.file);
-        if self.file_mode && !file_info_rc.borrow().file_info_ast.borrow().ast.is_built() {
+        if !file_info_rc.borrow().file_info_ast.borrow().ast.is_built() {
             file_info_rc.borrow_mut().prepare_ast(session);
         }
         self.file_info = Some(file_info_rc.clone());
@@ -203,7 +204,7 @@ impl PythonArchBuilder {
                                     if let Some(evals) = evaluations && evals.len() == 1 {
                                         let value = &evals[0].value;
                                         if value.is_some() {
-                                            let (nf, parse_error) = self.extract_all_symbol_eval_values(&value.as_ref());
+                                            let (nf, parse_error) = self.extract_all_symbol_eval_values(&value.as_deref());
                                             if parse_error {
                                                 warn!("error during parsing __all__ import in file {}", session.st().paths(import_symbol)[0] )
                                             }
@@ -498,9 +499,9 @@ impl PythonArchBuilder {
                         vec![]
                     }
                     EvaluationValue::CONSTANT(c) => {
-                        match &**c {
-                            Expr::StringLiteral(s) => {
-                                vec![oyarn!("{}", s.value)]
+                        match c.as_str() {
+                            Some(s) => {
+                                vec![oyarn!("{}", s)]
                             },
                             _ => {parse_error = true; vec![]}
                         }
@@ -511,9 +512,9 @@ impl PythonArchBuilder {
                     EvaluationValue::LIST(l) => {
                         let mut res = vec![];
                         for v in l.iter() {
-                            match v {
-                                Expr::StringLiteral(s) => {
-                                    res.push(oyarn!("{}", s.value));
+                            match v.as_str() {
+                                Some(s) => {
+                                    res.push(oyarn!("{}", s));
                                 }
                                 _ => {parse_error = true; }
                             }
@@ -523,9 +524,9 @@ impl PythonArchBuilder {
                     EvaluationValue::TUPLE(t) => {
                         let mut res = vec![];
                         for v in t.iter() {
-                            match v {
-                                Expr::StringLiteral(s) => {
-                                    res.push(oyarn!("{}", s.value));
+                            match v.as_str() {
+                                Some(s) => {
+                                    res.push(oyarn!("{}", s));
                                 }
                                 _ => {parse_error = true; }
                             }
@@ -582,10 +583,10 @@ impl PythonArchBuilder {
                                 // or with meta programmation like globals["var"] = __get_func().
                                 // we don't want to handle that, so just declare __all__ content
                                 // as symbols to not raise any error.
-                                if let Some(EvaluationValue::LIST(list)) = &evaluation.value {
+                                if let Some(EvaluationValue::LIST(list)) = evaluation.value.as_deref() {
                                     for item in list.iter() {
-                                        if let Expr::StringLiteral(s) = item {
-                                            self.__all_symbols_to_add.push((s.value.to_string(), evaluation.range.unwrap()));
+                                        if let Some(s) = item.as_str() {
+                                            self.__all_symbols_to_add.push((s.to_string(), evaluation.range.unwrap()));
                                         }
                                     }
                                 }
@@ -661,29 +662,21 @@ impl PythonArchBuilder {
         for arg in parameters.posonlyargs.iter() {
             let param = session.st_mut().add_new_variable(function_key, &arg.parameter.name.id, arg.range);
             session.st_mut()[param].is_parameter = true;
-            let mut default = None;
-            if arg.default.is_some() {
-                default = Some(Evaluation::new_none()); //TODO evaluate default? actually only used to know if there is a default or not
-            }
             session.st_mut()[function_key].args.push(Argument {
                 symbol: param.into(),
-                default_value: default,
+                has_default: arg.default.is_some(),
                 arg_type: ArgumentType::POS_ONLY,
-                annotation: arg.parameter.annotation.clone(),
+                annotation: arg.parameter.annotation.as_ref().map(|annotation| annotation.range()),
             });
         }
         for arg in parameters.args.iter() {
             let param = session.st_mut().add_new_variable(function_key, &arg.parameter.name.id, arg.range);
             session.st_mut()[param].is_parameter = true;
-            let mut default = None;
-            if arg.default.is_some() {
-                default = Some(Evaluation::new_none()); //TODO evaluate default? actually only used to know if there is a default or not
-            }
             session.st_mut()[function_key].args.push(Argument {
                 symbol: param.into(),
-                default_value: default,
+                has_default: arg.default.is_some(),
                 arg_type: ArgumentType::ARG,
-                annotation: arg.parameter.annotation.clone(),
+                annotation: arg.parameter.annotation.as_ref().map(|annotation| annotation.range()),
             });
         }
         if let Some(arg) = &parameters.vararg {
@@ -691,9 +684,9 @@ impl PythonArchBuilder {
             session.st_mut()[param].is_parameter = true;
             session.st_mut()[function_key].args.push(Argument {
                 symbol: param.into(),
-                default_value: None,
+                has_default: false,
                 arg_type: ArgumentType::VARARG,
-                annotation: arg.annotation.clone(),
+                annotation: arg.annotation.as_ref().map(|annotation| annotation.range()),
             });
         }
         for arg in parameters.kwonlyargs.iter() {
@@ -701,9 +694,9 @@ impl PythonArchBuilder {
             session.st_mut()[param].is_parameter = true;
             session.st_mut()[function_key].args.push(Argument {
                 symbol: param.into(),
-                default_value: arg.default.as_ref().map(|_default| Evaluation::new_none()),
+                has_default: arg.default.is_some(),
                 arg_type: ArgumentType::KWORD_ONLY,
-                annotation: arg.parameter.annotation.clone(),
+                annotation: arg.parameter.annotation.as_ref().map(|annotation| annotation.range()),
             });
         }
         if let Some(arg) = &parameters.kwarg {
@@ -711,9 +704,9 @@ impl PythonArchBuilder {
             session.st_mut()[param].is_parameter = true;
             session.st_mut()[function_key].args.push(Argument {
                 symbol: param.into(),
-                default_value: None,
+                has_default: false,
                 arg_type: ArgumentType::KWARG,
-                annotation: arg.annotation.clone(),
+                annotation: arg.annotation.as_ref().map(|annotation| annotation.range()),
             });
         }
     }
@@ -758,7 +751,7 @@ impl PythonArchBuilder {
         if func_def.body[0].is_expr_stmt() {
             let expr: &ruff_python_ast::StmtExpr = func_def.body[0].as_expr_stmt().unwrap();
             if let Some(s) = expr.value.as_string_literal_expr() {
-                func_sym.doc_string = Some(s.value.to_string())
+                func_sym.doc_string = Some(DocString::Source(s.range))
             }
         }
         //add params
@@ -798,7 +791,7 @@ impl PythonArchBuilder {
             if expr.value.is_literal_expr() {
                 let const_expr = expr.value.as_literal_expr().unwrap();
                 if let Some(s) = const_expr.as_string_literal() {
-                    class_sym.doc_string = Some(s.value.to_string());
+                    class_sym.doc_string = Some(DocString::Source(s.range));
                 }
             }
         }
