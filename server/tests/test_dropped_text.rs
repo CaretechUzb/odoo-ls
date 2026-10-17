@@ -11,8 +11,10 @@ use assert_fs::TempDir;
 use assert_fs::prelude::*;
 use lsp_types::TextDocumentContentChangeEvent;
 use odoo_ls_server::core::config::{ConfigEntry, ConfigKey};
-use odoo_ls_server::core::file_mgr::{FileInfo, FileMgr, TEXT_REREADS};
+use odoo_ls_server::core::build_scheduler::BuildScheduler;
+use odoo_ls_server::core::file_mgr::{FileInfo, FileMgr, TEXT_REREADS, hash_text_document};
 use odoo_ls_server::core::odoo::SyncOdoo;
+use odoo_ls_server::core::text_document::TextDocument;
 use odoo_ls_server::threads::SessionInfo;
 use odoo_ls_server::utils::PathSanitizer;
 use ruff_source_file::PositionEncoding;
@@ -202,6 +204,43 @@ fn test_build_drops_the_texts_of_data_and_js_files() {
         match file_cache {
             false => assert!(with_text.is_empty(), "texts kept after the build: {with_text:?}"),
             true => assert_eq!(with_text.len(), files.len(), "file_cache must keep every text"),
+        }
+    }
+}
+
+/// A file that got a watcher event has version -100, which `update_file_info` without a version
+/// skips. Its reload after a change on disk (found by reading its dropped text again) must still
+/// move its hash and build it again, or every later read queues it for a reload again, and a JS
+/// file keeps the components of its old content.
+#[test]
+fn test_reload_of_a_file_with_version_minus_100_settles() {
+    let files = write_files();
+    let (mut odoo, config) = server(false);
+    let mut session = setup::setup::create_init_session(&mut odoo, config);
+    for path in [&files.xml, &files.js] {
+        let (_, file_info) = session.sync_odoo.get_file_mgr().borrow_mut().update_file_info(&mut session, path, None, Some(-100), false);
+        assert_eq!(file_info.borrow().version, Some(-100));
+        for round in 1..=3 {
+            let content = match path.ends_with(".js") {
+                true => format!("{JS}\nexport class Round{round} extends Component {{\n    static template = \"test.Round{round}\";\n}}\n"),
+                false => XML.replace("r1", &format!("round_{round}")),
+            };
+            fs::write(path, &content).unwrap();
+            FileMgr::drop_text(&session, &file_info);
+            assert!(FileInfo::ensure_text(&file_info, &mut session));
+            assert!(session.sync_odoo.files_changed_on_disk.contains(path), "{path}, round {round}: the change should be found");
+            BuildScheduler::process_rebuilds(&mut session, false);
+            assert!(session.sync_odoo.files_changed_on_disk.is_empty(), "{path}, round {round}: the reload should be done");
+            let disk_hash = hash_text_document(&TextDocument::new(content.clone(), -1));
+            assert_eq!(file_info.borrow().file_info_ast.borrow().text_hash, disk_hash, "{path}, round {round}: the hash should be the one on disk");
+            // Read again, unchanged: no new reload.
+            FileMgr::drop_text(&session, &file_info);
+            assert!(FileInfo::ensure_text(&file_info, &mut session));
+            assert!(session.sync_odoo.files_changed_on_disk.is_empty(), "{path}, round {round}: an unchanged file must not be queued again");
+            if path.ends_with(".js") {
+                let components: Vec<String> = session.sync_odoo.component_mgr.components_in_file(path).map(|c| c.class_name.clone()).collect();
+                assert!(components.contains(&format!("Round{round}")), "{path}, round {round}: components {components:?}");
+            }
         }
     }
 }

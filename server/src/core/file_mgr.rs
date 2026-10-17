@@ -961,7 +961,9 @@ impl FileInfo {
 
     /// The file changed on disk since it was built, and no event told us yet. Its symbols (node
     /// indexes included) were built from the previous content: have it reloaded by the next
-    /// rebuild. The watcher event, if one comes, will find the file unchanged.
+    /// rebuild, which moves its `text_hash` to the new content. A watcher event that comes after
+    /// the reload finds the file unchanged; one that comes before reloads the file itself and
+    /// takes it off the queue (`Odoo::handle_file_update`).
     fn reload_changed_on_disk(&self, session: &mut SessionInfo) {
         if session.sync_odoo.files_changed_on_disk.contains(&self.uri) {
             return;

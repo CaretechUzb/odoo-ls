@@ -2022,6 +2022,9 @@ impl Odoo {
             let file_extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
             let (valid, updated) = Odoo::update_file_cache(session, &path.sanitize_cow(), file_extension, None, -100);
             if valid && updated {
+                // Reloaded here: a reload queued by a read of its changed content is not needed.
+                let path_str = path.sanitize_cow();
+                session.sync_odoo.files_changed_on_disk.retain(|p| p.as_str() != path_str.as_ref());
                 Odoo::update_file_index(session, &path, file_extension, false, true);
             }
         }

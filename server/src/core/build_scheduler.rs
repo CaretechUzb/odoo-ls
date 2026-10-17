@@ -198,11 +198,19 @@ impl BuildScheduler {
     /// Reload the files whose dropped AST or text was read again from a content that changed
     /// on disk (see `FileInfo::reload_changed_on_disk`): their symbols were built from the
     /// previous one.
-    /// Same as `SessionInfo::request_update_file_index`, whose event will not come: the file
-    /// info already holds the new content.
+    /// Same as the watcher event (`Odoo::handle_file_update`), which may not come: the file
+    /// info is updated from disk with version -100, then the file index.
     fn reload_files_changed_on_disk(session: &mut SessionInfo) {
         for path in std::mem::take(&mut session.sync_odoo.files_changed_on_disk) {
             info!("Reloading {}: it changed on disk", path);
+            // Moves `text_hash` to the new content and builds again what is built from it (the
+            // JsAst and the components of a JS file). Without a version, `update_file_info` would
+            // skip a file of version -100 (one that got a watcher event before), and the file
+            // would be found changed again at each read. An opened file is left alone.
+            let known = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path).is_some();
+            if known {
+                session.sync_odoo.get_file_mgr().borrow_mut().update_file_info(session, &path, None, Some(-100), false);
+            }
             SyncOdoo::unload_path(session, Path::new(&path));
             Odoo::on_new_path(session, &path);
         }
