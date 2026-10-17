@@ -1311,6 +1311,7 @@ impl FileInfo {
     }
 
     fn try_offset_to_position_with_text_document(text_document: &TextDocument, offset: u32, encoding: PositionEncoding) -> Option<Position> {
+        let offset = floor_char_boundary(text_document.contents(), offset as usize) as u32;
         let location = text_document.index().source_location(offset.into(), text_document.contents(), encoding);
         let line = u32::try_from(location.line.to_zero_indexed()).ok()?;
         let character = u32::try_from(location.character_offset.to_zero_indexed()).ok()?;
@@ -1875,14 +1876,25 @@ pub fn hash_text_document(text: &TextDocument) -> u64 {
     hasher.finish()
 }
 
+/// `offset` clamped to the text, moved back to the start of the character it falls in. An offset
+/// computed on a previous content (the file changed on disk since its symbols were built) then
+/// gives a wrong position until the file is rebuilt, instead of a panic.
+fn floor_char_boundary(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
 pub fn offset_to_position_with_line_index(
     index: &LineIndex,
     text: &str,
     offset: usize,
     encoding: PositionEncoding
 ) -> Position {
-    // clamp offset to text length
-    let offset = u32::try_from(offset.min(text.len())).expect("offset fits in u32");
+    // clamp offset to text length, and to a character boundary
+    let offset = u32::try_from(floor_char_boundary(text, offset)).expect("offset fits in u32");
     let location = index.source_location(offset.into(), text, encoding);
     let line = u32::try_from(location.line.to_zero_indexed()).expect("row usize fits in u32");
     let character = u32::try_from(location.character_offset.to_zero_indexed())
@@ -2014,6 +2026,25 @@ export class Counter extends Component {
 #[cfg(test)]
 mod line_table_tests {
     use super::*;
+
+    /// An offset inside a character (computed on a previous content of the file) converts to the
+    /// position of that character instead of panicking, in every encoding.
+    #[test]
+    fn offset_inside_a_character_converts_to_its_start() {
+        let text = "aé\n😀中b";
+        let text_document = TextDocument::new(text.to_string(), -1);
+        for offset in 0..=text.len() as u32 + 2 {
+            let start = floor_char_boundary(text, offset as usize) as u32;
+            for encoding in [PositionEncoding::Utf8, PositionEncoding::Utf16, PositionEncoding::Utf32] {
+                let expected = FileInfo::offset_to_position_with_text_document(&text_document, start, encoding);
+                assert_eq!(FileInfo::offset_to_position_with_text_document(&text_document, offset, encoding), expected, "offset {offset}, {encoding:?}");
+                assert_eq!(FileInfo::try_offset_to_position_with_text_document(&text_document, offset, encoding), Some(expected), "offset {offset}, {encoding:?}");
+            }
+        }
+        assert_eq!(floor_char_boundary(text, 2), 1);
+        assert_eq!(floor_char_boundary(text, 6), 4);
+        assert_eq!(floor_char_boundary(text, 100), text.len());
+    }
 
     /// A dropped text keeps converting offsets and positions exactly as the text did, in every
     /// encoding: 2-, 3- and 4-byte characters, adjacent runs of different widths, CRLF line
