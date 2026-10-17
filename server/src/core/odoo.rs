@@ -1594,7 +1594,7 @@ impl Odoo {
             }
             let file_info = session.sync_odoo.get_file_mgr().borrow_mut().get_file_info(&path);
             if let Some(file_info) = file_info {
-                if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+                if !file_info.borrow().file_info_ast.borrow().is_built() {
                     file_info.borrow_mut().prepare_ast(session);
                 }
                 let ast_kind = file_info.borrow().file_info_ast.borrow().ast.kind();
@@ -1652,7 +1652,7 @@ impl Odoo {
         if let Some(file_symbol) = SyncOdoo::get_symbol_of_opened_file(session, &file_path_buf) {
             let file_info = session.sync_odoo.get_file_mgr().borrow_mut().get_file_info(&path);
             if let Some(file_info) = file_info {
-                if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+                if !file_info.borrow().file_info_ast.borrow().is_built() {
                     file_info.borrow_mut().prepare_ast(session);
                 }
                 let ast_kind = file_info.borrow().file_info_ast.borrow().ast.kind();
@@ -1737,10 +1737,10 @@ impl Odoo {
             }
             let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path);
             if let Some(file_info) = file_info {
-                if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+                if !file_info.borrow().file_info_ast.borrow().is_built() {
                     file_info.borrow_mut().prepare_ast(session);
                 }
-                if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+                if !file_info.borrow().file_info_ast.borrow().is_built() {
                     return Ok(None);
                 }
                 return match is_declaration {
@@ -1780,7 +1780,7 @@ impl Odoo {
             }
             let file_info = session.sync_odoo.get_file_mgr().borrow_mut().get_file_info(&path);
             if let Some(file_info) = file_info {
-                if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+                if !file_info.borrow().file_info_ast.borrow().is_built() {
                     file_info.borrow_mut().prepare_ast(session);
                 }
                 return Ok(ReferenceFeature::get_references(session, file_symbol, &file_info, params.text_document_position.position.line, params.text_document_position.position.character));
@@ -1801,7 +1801,7 @@ impl Odoo {
         let path = FileMgr::uri2pathname(uri.as_str());
         let file_symbol = SyncOdoo::get_symbol_of_opened_file(session, Path::new(&path))?;
         let file_info = session.sync_odoo.get_file_mgr().borrow_mut().get_file_info(&path)?;
-        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+        if !file_info.borrow().file_info_ast.borrow().is_built() {
             file_info.borrow_mut().prepare_ast(session);
         }
         Some((file_symbol, file_info))
@@ -1872,7 +1872,7 @@ impl Odoo {
             }
             let file_info = session.sync_odoo.get_file_mgr().borrow_mut().get_file_info(&path);
             if let Some(file_info) = file_info {
-                if schema != "untitled" && !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+                if schema != "untitled" && !file_info.borrow().file_info_ast.borrow().is_built() {
                     file_info.borrow_mut().prepare_ast(session);
                 }
                 let trigger_kind = params.context.as_ref()
@@ -2445,7 +2445,7 @@ impl Odoo {
         };
         let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path);
         if let Some(file_info) = file_info {
-            if schema != "untitled" && !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+            if schema != "untitled" && !file_info.borrow().file_info_ast.borrow().is_built() {
                 file_info.borrow_mut().prepare_ast(session);
             }
             return Ok(DocumentSymbolFeature::get_symbols(session, &file_info));

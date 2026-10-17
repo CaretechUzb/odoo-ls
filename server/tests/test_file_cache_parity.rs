@@ -46,7 +46,7 @@ fn collect_answers(file_cache: bool) -> (Vec<String>, Vec<bool>) {
     let mut before_query = |session: &mut odoo_ls_server::threads::SessionInfo| {
         // A previous query parsed the file again: drop it so that every query starts without AST.
         FileMgr::drop_ast(session, &file_info);
-        dropped.push(!file_info.borrow().file_info_ast.borrow().ast.is_built());
+        dropped.push(!file_info.borrow().file_info_ast.borrow().is_built());
     };
     for &(line, character) in HOVER_AND_DEFINITION {
         before_query(&mut session);
@@ -91,10 +91,10 @@ fn test_reloaded_asts_are_bounded() {
     let mut session = setup::setup::create_init_session(&mut odoo, config);
     let file_mgr = session.sync_odoo.get_file_mgr();
     let built_python_asts = |file_mgr: &FileMgr| file_mgr.files.values()
-        .filter(|f| f.borrow().uri.ends_with(".py") && !f.borrow().opened && f.borrow().file_info_ast.borrow().ast.is_built())
+        .filter(|f| f.borrow().uri.ends_with(".py") && !f.borrow().opened && f.borrow().file_info_ast.borrow().is_built())
         .count();
     let dropped: Vec<String> = file_mgr.borrow().files.values()
-        .filter(|f| f.borrow().uri.ends_with(".py") && !f.borrow().file_info_ast.borrow().ast.is_built())
+        .filter(|f| f.borrow().uri.ends_with(".py") && !f.borrow().file_info_ast.borrow().is_built())
         .map(|f| f.borrow().uri.clone())
         .take(100)
         .collect();
@@ -117,12 +117,12 @@ fn test_open_file_with_dropped_ast() {
         .join("tests").join("data").join("addons").join("module_1").join("models").join("base_test_models.py")
         .sanitize();
     let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path).expect("file info not found");
-    assert!(!file_info.borrow().file_info_ast.borrow().ast.is_built(), "the AST should have been dropped after validation");
+    assert!(!file_info.borrow().file_info_ast.borrow().is_built(), "the AST should have been dropped after validation");
     let text = std::fs::read_to_string(&path).unwrap();
     let open = [lsp_types::TextDocumentContentChangeEvent { range: None, range_length: None, text }];
     let file_mgr = session.sync_odoo.get_file_mgr();
     let (updated, _) = file_mgr.borrow_mut().update_file_info(&mut session, &path, Some(&open), Some(1), false);
     assert!(!updated, "unchanged content must not trigger a rebuild");
     assert!(file_info.borrow().opened);
-    assert!(file_info.borrow().file_info_ast.borrow().ast.is_built(), "an opened file must have its AST");
+    assert!(file_info.borrow().file_info_ast.borrow().is_built(), "an opened file must have its AST");
 }

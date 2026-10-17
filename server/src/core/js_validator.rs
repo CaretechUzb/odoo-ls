@@ -37,11 +37,11 @@ impl JsValidator {
             session.st_mut().set_build_status(self.js_symbol.into(), BuildSteps::VALIDATION, BuildStatus::INVALID);
             return;
         }
-        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+        if !file_info.borrow().file_info_ast.borrow().is_built() {
             // JS Symbols do not go through the arch step,
             // Custom JS files may not have been built yet, so we need to build the AST first before validating
             file_info.borrow_mut().prepare_ast(session);
-            if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+            if !file_info.borrow().file_info_ast.borrow().is_built() {
                 // Still not built, something went wrong, we cannot validate this file
                 session.st_mut().set_build_status(self.js_symbol.into(), BuildSteps::VALIDATION, BuildStatus::INVALID);
                 return;

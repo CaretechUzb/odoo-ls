@@ -405,7 +405,7 @@ impl ReferenceFeature {
     /// check the graph index against it.
     pub fn scan_file_references(session: &mut SessionInfo, file: SourceFileKey, target: SymbolKey) -> Vec<Location> {
         let (file_info, _) = FileMgr::get_or_recreate_file_info(session, file);
-        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+        if !file_info.borrow().file_info_ast.borrow().is_built() {
             file_info.borrow_mut().prepare_ast(session);
         }
         ReferenceFeature::references_in_file(session, file, &file_info, &ReferenceTarget::Symbol(target))
@@ -471,7 +471,7 @@ impl ReferenceFeature {
         let Some(file_info) = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path) else {
             return vec![];
         };
-        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+        if !file_info.borrow().file_info_ast.borrow().is_built() {
             file_info.borrow_mut().prepare_ast(session);
         }
         let file_info_ast = file_info.borrow().file_info_ast.clone();

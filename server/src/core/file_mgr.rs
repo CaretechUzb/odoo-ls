@@ -336,12 +336,6 @@ impl Ast {
             _ => panic!("Expected JsAst, found {:?}", self),
         }
     }
-    pub fn is_built(&self) -> bool {
-        match self {
-            Ast::PythonAst(py_ast) => py_ast.indexed_module.is_some(),
-            Ast::JsAst(_) | Ast::XmlAst | Ast::CsvAst => true,
-        }
-    }
     /// Read the AST kind for matching on type only without cloning
     pub fn kind(&self) -> AstKind {
         match self {
@@ -374,6 +368,23 @@ pub struct FileInfoAst {
 }
 
 impl FileInfoAst {
+    /// Whether the file is ready for the features: what they read is in memory. That is the AST
+    /// for a Python file, the text for an XML or CSV file (parsed again by each use), and the
+    /// [`JsAst`] for a JS file, which is kept when its text is dropped: a JS feature that needs
+    /// the text asks for it with [`FileInfo::ensure_text`].
+    pub fn is_built(&self) -> bool {
+        match &self.ast {
+            Ast::PythonAst(py_ast) => py_ast.indexed_module.is_some(),
+            Ast::XmlAst | Ast::CsvAst => self.text_document.is_some(),
+            Ast::JsAst(_) => true,
+        }
+    }
+
+    /// Whether the text of the file is in memory.
+    pub fn has_text(&self) -> bool {
+        self.text_document.is_some()
+    }
+
     /// Free the Python AST and source text of a file, keeping its `text_hash` and a [`LineTable`].
     /// [`FileInfo::prepare_ast`] re-reads and re-parses the file when the AST is needed again.
     /// Other kinds of files are left untouched.
@@ -656,7 +667,7 @@ impl FileInfo {
         if old_hash == new_hash {
             // Unchanged content, but the AST may have been dropped (file_cache off): callers expect
             // it back. The build drops it again after the file's next validation.
-            if !self.file_info_ast.borrow().ast.is_built() {
+            if !self.file_info_ast.borrow().is_built() {
                 self._build_ast(session, is_external);
             }
             return false;
@@ -898,10 +909,10 @@ impl FileInfo {
     /// Re-acquire the AST of `file_info` if it was dropped, see [`Self::prepare_ast`]. Returns
     /// false if there is still no AST, e.g. the file was deleted from disk since.
     pub fn ensure_ast(file_info: &Rc<RefCell<FileInfo>>, session: &mut SessionInfo) -> bool {
-        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+        if !file_info.borrow().file_info_ast.borrow().is_built() {
             file_info.borrow_mut().prepare_ast(session);
         }
-        file_info.borrow().file_info_ast.borrow().ast.is_built()
+        file_info.borrow().file_info_ast.borrow().is_built()
     }
 
     /// Scan a parsed module's comment tokens for `noqa` directives and (in test mode)
@@ -1539,11 +1550,11 @@ impl FileMgr {
             let ep_mgr = session.sync_odoo.entry_point_mgr.borrow();
             let is_part_of_ep = ep_mgr.iter_all_but_public().any(|entry| uri.starts_with(&entry.borrow().path));
             drop(ep_mgr);
-            let was_built = file_info_mut.file_info_ast.borrow().ast.is_built();
+            let was_built = file_info_mut.file_info_ast.borrow().is_built();
             updated = file_info_mut.update(session, uri, content, version, !is_part_of_ep, force, is_untitled);
             // Unchanged content gave a dropped AST back (see `FileInfo::update`): bound it like a re-parse.
             if !updated && !was_built && !file_info_mut.opened && !session.sync_odoo.config.file_cache()
-                && file_info_mut.file_info_ast.borrow().ast.is_built() {
+                && file_info_mut.file_info_ast.borrow().is_built() {
                     drop(file_info_mut);
                     self.keep_reparsed_ast(uri);
                 }

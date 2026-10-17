@@ -70,7 +70,7 @@ impl PythonArchEval {
         }
         session.st_mut().set_build_status(symbol.unwrap_buildable_key(), BuildSteps::ARCH_EVAL, BuildStatus::IN_PROGRESS);
         let (file_info_rc, _) = FileMgr::get_or_recreate_file_info(session, self.file);
-        if !file_info_rc.borrow().file_info_ast.borrow().ast.is_built() {
+        if !file_info_rc.borrow().file_info_ast.borrow().is_built() {
             file_info_rc.borrow_mut().prepare_ast(session);
         }
         let file_info = (*file_info_rc).borrow();
