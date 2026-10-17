@@ -826,12 +826,18 @@ fn base_info(st: &SymbolTable, path: &str, text: Option<&str>, sym: SymbolKey, q
 
 /// Node of one symbol (identity computed from the current symbol table).
 pub fn node_info(st: &SymbolTable, path: &str, text: Option<&str>, sym: SymbolKey) -> Option<NodeInfo> {
+    node_info_cached(st, path, text, sym, &mut HashMap::default())
+}
+
+/// [`node_info`], with the symbols of each qualname of a file looked up once per `same_qualname`.
+pub fn node_info_cached(st: &SymbolTable, path: &str, text: Option<&str>, sym: SymbolKey, same_qualname: &mut HashMap<(SourceFileKey, String), Vec<SymbolKey>>) -> Option<NodeInfo> {
     if target_class(st, sym) != TargetClass::Indexed {
         return None;
     }
     let file = st.get_file(sym)?;
     let qualname = qualname(st, sym)?;
-    let occurrence = symbols_with_qualname(st, file, &qualname).iter().position(|s| *s == sym)? as u32;
+    let symbols = same_qualname.entry((file, qualname.clone())).or_insert_with(|| symbols_with_qualname(st, file, &qualname));
+    let occurrence = symbols.iter().position(|s| *s == sym)? as u32;
     Some(base_info(st, path, text, sym, qualname, occurrence))
 }
 

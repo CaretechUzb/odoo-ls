@@ -15,7 +15,7 @@ use crate::constants::SymType;
 use crate::core::file_mgr::FileInfo;
 use crate::core::graph_index::NodeInfo;
 use crate::core::symbols::symbol_keys::{ModelSymbolKey, SourceFileKey, SymbolKey};
-use crate::features::call_hierarchy::{check_index, db_failure, graph, identity_from_data, node_of_symbol, node_row, symbol_of_identity, symbols_at, type_item, RangeConverter};
+use crate::features::call_hierarchy::{check_index, db_failure, graph, identity_from_data, node_row, symbol_of_identity, symbols_at, type_item, NodeCache, RangeConverter};
 use crate::threads::SessionInfo;
 
 pub struct TypeHierarchyFeature;
@@ -23,8 +23,9 @@ pub struct TypeHierarchyFeature;
 impl TypeHierarchyFeature {
     pub fn prepare(session: &mut SessionInfo, file_symbol: SourceFileKey, file_info: &Rc<RefCell<FileInfo>>, line: u32, character: u32) -> Result<Option<Vec<TypeHierarchyItem>>, ResponseError> {
         let mut ranges = RangeConverter::default();
+        let mut nodes = NodeCache::default();
         let items: Vec<TypeHierarchyItem> = symbols_at(session, file_symbol, file_info, line, character, SymType::CLASS).into_iter()
-            .filter_map(|sym| node_of_symbol(session, sym))
+            .filter_map(|sym| nodes.node(session, sym))
             .map(|info| type_item(session, &mut ranges, &info))
             .collect();
         Ok(if items.is_empty() { None } else { Some(items) })
@@ -65,8 +66,9 @@ impl TypeHierarchyFeature {
             }
         }
         let mut ranges = RangeConverter::default();
+        let mut nodes = NodeCache::default();
         let items = supertypes.into_iter()
-            .filter_map(|sym| node_of_symbol(session, sym))
+            .filter_map(|sym| nodes.node(session, sym))
             .map(|info| type_item(session, &mut ranges, &info))
             .collect();
         Ok(Some(items))

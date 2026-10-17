@@ -134,10 +134,32 @@ pub fn type_item(session: &SessionInfo, ranges: &mut RangeConverter, info: &Node
 
 /// Node of a live symbol, computed from the symbol table (the same identity the index stores).
 pub fn node_of_symbol(session: &SessionInfo, sym: SymbolKey) -> Option<NodeInfo> {
-    let file = session.st().get_file(sym)?;
-    let path = session.st().file_path(file).to_string();
-    let text = graph_recorder::file_text(session, &path);
-    graph_recorder::node_info(session.st(), &path, text.as_deref(), sym)
+    NodeCache::default().node(session, sym)
+}
+
+/// Nodes of live symbols for one request: the text of each file is read (copied or read from
+/// disk) once, the symbols sharing a qualname are looked up once, and each node computed once.
+#[derive(Default)]
+pub struct NodeCache {
+    texts: HashMap<String, Option<String>>,
+    same_qualname: HashMap<(SourceFileKey, String), Vec<SymbolKey>>,
+    nodes: HashMap<SymbolKey, Option<NodeInfo>>,
+}
+
+impl NodeCache {
+    pub fn node(&mut self, session: &SessionInfo, sym: SymbolKey) -> Option<NodeInfo> {
+        if let Some(node) = self.nodes.get(&sym) {
+            return node.clone();
+        }
+        let node = (|| {
+            let file = session.st().get_file(sym)?;
+            let path = session.st().file_path(file);
+            let text = self.texts.entry(path.to_string()).or_insert_with(|| graph_recorder::file_text(session, path));
+            graph_recorder::node_info_cached(session.st(), path, text.as_deref(), sym, &mut self.same_qualname)
+        })();
+        self.nodes.insert(sym, node.clone());
+        node
+    }
 }
 
 /// Live symbol of a node identity.
@@ -220,8 +242,9 @@ impl CallHierarchyFeature {
     pub fn prepare(session: &mut SessionInfo, file_symbol: SourceFileKey, file_info: &Rc<RefCell<FileInfo>>, line: u32, character: u32) -> Result<Option<Vec<CallHierarchyItem>>, ResponseError> {
         check_index(session)?;
         let mut ranges = RangeConverter::default();
+        let mut nodes = NodeCache::default();
         let items: Vec<CallHierarchyItem> = symbols_at(session, file_symbol, file_info, line, character, SymType::FUNCTION).into_iter()
-            .filter_map(|sym| node_of_symbol(session, sym))
+            .filter_map(|sym| nodes.node(session, sym))
             .map(|info| call_item(session, &mut ranges, &info))
             .collect();
         Ok(if items.is_empty() { None } else { Some(items) })
@@ -239,6 +262,7 @@ impl CallHierarchyFeature {
         }
         let (dirty_paths, dirty_edges) = dirty_file_edges(session);
         let mut grouped = Grouped::new();
+        let mut nodes = NodeCache::default();
         if let Some(node) = node.as_ref() {
             let rows = graph(session)?
                 .incoming_calls(node.id, model_method.as_ref().map(|(m, n)| (m.as_str(), n.as_str())));
@@ -254,7 +278,7 @@ impl CallHierarchyFeature {
             if !matches {
                 continue;
             }
-            let (Some(caller), Some(site_path)) = (node_of_symbol(session, edge.src), path_of(session, edge.src)) else { continue };
+            let (Some(caller), Some(site_path)) = (nodes.node(session, edge.src), path_of(session, edge.src)) else { continue };
             grouped.add(caller, EdgeSite { path: site_path, start: edge.start, end: edge.end });
         }
         let mut ranges = RangeConverter::default();
@@ -270,11 +294,12 @@ impl CallHierarchyFeature {
         let Some((path, qualname, occurrence)) = identity_from_data(item.data.as_ref()) else { return Ok(None) };
         let source = symbol_of_identity(session, &path, &qualname, occurrence);
         let mut grouped = Grouped::new();
+        let mut nodes = NodeCache::default();
         let dirty = source.and_then(|s| session.st().get_file(s)).filter(|f| graph_recorder::dirty_files(session).contains(f));
         match (dirty, source) {
             (Some(file), Some(source)) => {
                 for edge in ReferenceFeature::graph_scan_file(session, file).into_iter().filter(|e| e.kind == EDGE_CALL && e.src == source) {
-                    let Some(callee) = edge.dst.and_then(|d| node_of_symbol(session, d)) else { continue };
+                    let Some(callee) = edge.dst.and_then(|d| nodes.node(session, d)) else { continue };
                     grouped.add(callee, EdgeSite { path: path.clone(), start: edge.start, end: edge.end });
                 }
             },
