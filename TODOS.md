@@ -57,3 +57,17 @@
 **Context:** Found while dropping the XML/CSV/JS texts.
 
 **Depends on / blocked by:** None.
+
+### Diagnostic positions computed from the text
+
+**What:** Make `FileInfo::publish_diagnostics` convert offsets with the line table even when the file's text is in memory, or cache the per-line data that ruff's `LineIndex` recomputes.
+
+**Why:** Measured on his, 2026-10-17, with `file_cache = true`: a macOS `sample` of the module VALIDATION phase put nearly all main-thread samples in `publish_diagnostics` → `offset_to_position_with_line_index` (`server/src/core/file_mgr.rs`) → ruff `LineIndex::characters_between`. Files whose text was dropped convert through the line table instead. This is why the `--parse` validation phase takes ~16 s with `file_cache = false` and ~55 s with `file_cache = true`, with the same diagnostics digest.
+
+**Pros:** About 40 s less initial indexing with `file_cache = true`, and faster diagnostics for opened files, with the same positions.
+
+**Cons:** The line table then has to be built for files that keep their text, which costs memory (~17 MB for all files on his).
+
+**Context:** `characters_between` counts characters from the start of a non-ASCII line, so the cost probably comes from a few files with long non-ASCII lines and many diagnostics. Which files is not measured yet. Find them first, then check the positions against the `file_cache = false` output.
+
+**Depends on / blocked by:** None.
