@@ -21,6 +21,7 @@ use crate::core::python_utils;
 use crate::core::symbols::Buildable;
 use crate::core::symbols::symbol_keys::{FunctionKey, PythonBuildableSymbolKey, SourceFileKey, SymbolKey};
 use crate::core::symbols::storage::SymbolTable;
+use crate::core::symbols::DocString;
 use crate::threads::SessionInfo;
 use crate::oyarn;
 
@@ -750,7 +751,7 @@ impl PythonArchBuilder {
         if func_def.body[0].is_expr_stmt() {
             let expr: &ruff_python_ast::StmtExpr = func_def.body[0].as_expr_stmt().unwrap();
             if let Some(s) = expr.value.as_string_literal_expr() {
-                func_sym.doc_string = Some(s.value.to_string())
+                func_sym.doc_string = Some(DocString::Source(s.range))
             }
         }
         //add params
@@ -790,7 +791,7 @@ impl PythonArchBuilder {
             if expr.value.is_literal_expr() {
                 let const_expr = expr.value.as_literal_expr().unwrap();
                 if let Some(s) = const_expr.as_string_literal() {
-                    class_sym.doc_string = Some(s.value.to_string());
+                    class_sym.doc_string = Some(DocString::Source(s.range));
                 }
             }
         }

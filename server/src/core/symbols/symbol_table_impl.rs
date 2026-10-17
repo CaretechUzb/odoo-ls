@@ -4,6 +4,7 @@ use std::{
 
 use lsp_types::{Diagnostic, DiagnosticTag, Range, SymbolKind};
 use ruff_text_size::TextRange;
+use crate::core::symbols::DocString;
 
 use crate::{
     constants::{BuildStatus, BuildSteps, MissingDataSource, OYarn, PackageType, SymType, LAMBDA_NAME},
@@ -161,10 +162,13 @@ impl SymbolTable {
         }
     }
 
-    pub fn doc_string(&self, target: impl Into<SymbolKey>) -> Option<&String> {
+    /// Where the docstring of a class, function or variable comes from (the text itself is
+    /// read with `FeaturesUtils::doc_string_text`).
+    pub fn doc_string(&self, target: impl Into<SymbolKey>) -> Option<DocString> {
         match target.into() {
-            SymbolKey::Class(k) => self[k].doc_string.as_ref(),
-            SymbolKey::Function(k) => self[k].doc_string.as_ref(),
+            SymbolKey::Class(k) => self[k].doc_string,
+            SymbolKey::Function(k) => self[k].doc_string,
+            SymbolKey::Variable(k) => self[k].doc_string,
             _ => None
         }
     }

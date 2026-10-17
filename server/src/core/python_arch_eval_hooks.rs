@@ -25,6 +25,7 @@ use crate::core::symbols::symbol_keys::SourceFileKey;
 use crate::core::symbols::symbol_keys::SymbolKey;
 use crate::core::symbols::symbol_keys::Wk;
 use crate::core::symbols::storage::SymbolTable;
+use crate::core::symbols::DocString;
 use crate::oyarn;
 use crate::threads::SessionInfo;
 use crate::Sy;
@@ -83,7 +84,7 @@ static arch_eval_file_hooks: LazyLock<Vec<PythonArchEvalFileHook>> = LazyLock::n
             value: None,
             range: None,
         }];
-        env.doc_string = Some(S!(""));
+        env.doc_string = Some(DocString::Static(""));
         odoo.symbol_table.add_dependency(file_symbol, env_file, BuildSteps::ARCH_EVAL, BuildSteps::ARCH);
     }},
     PythonArchEvalFileHook {odoo_entry: true,

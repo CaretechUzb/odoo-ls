@@ -18,7 +18,7 @@ use crate::{
 pub struct VariableSymbol {
     pub name: OYarn,
     pub is_external: bool,
-    pub doc_string: Option<String>,
+    pub doc_string: Option<crate::core::symbols::DocString>,
     pub is_import_variable: bool,
     pub is_parameter: bool,
     pub evaluations: Vec<Evaluation>, //Vec, because sometimes a single allocation can be ambiguous, like ''' a = "5" if X else 5 '''

@@ -10,7 +10,7 @@ use crate::core::symbols::function_symbol::Argument;
 use crate::core::symbols::storage::xml::xml_field_symbol::XmlFieldName;
 use crate::core::symbols::symbol_keys::{ModelSymbolKey, ModuleKey, SourceFileKey, SymbolKey, Wk, XmlId, XmlRecordKey};
 use crate::core::symbols::storage::SymbolTable;
-use crate::core::symbols::FunctionSymbol;
+use crate::core::symbols::{DocString, FunctionSymbol};
 use crate::tree::OYarnExt;
 use crate::utils::HashMap;
 use std::path::Path;
@@ -568,17 +568,18 @@ impl FeaturesUtils {
                 let mut string_handled = false;
                 if let Some(model) = session.sync_odoo.models.get(str).cloned() {
                     let model_ref = model.borrow();
-                    let model_main_syms = model_ref.get_main_symbols(session, from_module);
+                    let model_main_syms: Vec<_> = model_ref.get_main_symbols(session, from_module).collect();
                     let mut block = S!("");
                     for model_main_sym in model_main_syms {
                         match model_main_sym {
                             ModelSymbolKey::Class(class_key) => {
                                 let model_sym: SymbolKey = class_key.into();
+                                let doc_string = FeaturesUtils::doc_string_text(session, model_sym);
                                 let st = &session.sync_odoo.symbol_table;
                                 if let Some(main_class_module) = st.find_module(model_sym) {
                                     block += format!("Model in {}: {}", st[main_class_module].name, st.repr(model_sym)).as_str();
-                                    if let Some(doc_string) = st.doc_string(model_sym) {
-                                        block = block + "  \n***  \n" + doc_string;
+                                    if let Some(doc_string) = doc_string {
+                                        block = block + "  \n***  \n" + &doc_string;
                                     }
                                     block += "  \n***  \n";
                                     block += &model_ref.all_model_classes_dependencies(session, from_module)
@@ -695,8 +696,7 @@ impl FeaturesUtils {
 
 
     /// The parameter annotation at `range` in `file`. Arguments keep only that range: take the
-    /// expression from the file's AST (parsed again if it was dropped), or, for a file without
-    /// a FileInfo (external files lose it after ARCH_EVAL), from a throwaway parse of the file.
+    /// expression from the file's AST (see [`Self::with_file_stmts`]).
     fn annotation_expr(session: &mut SessionInfo, file: SourceFileKey, range: TextRange) -> Option<Expr> {
         use ruff_python_ast::visitor::source_order::{walk_parameter, SourceOrderVisitor};
         struct FindAnnotation { range: TextRange, found: Option<Expr> }
@@ -708,7 +708,7 @@ impl FeaturesUtils {
                 }
             }
         }
-        let find = |stmts: &[ruff_python_ast::Stmt]| {
+        FeaturesUtils::with_file_stmts(session, file, |stmts| {
             let mut visitor = FindAnnotation { range, found: None };
             for stmt in stmts {
                 if visitor.found.is_some() || stmt.range().end() < range.start() {
@@ -717,7 +717,13 @@ impl FeaturesUtils {
                 visitor.visit_stmt(stmt);
             }
             visitor.found
-        };
+        })
+    }
+
+    /// Run `f` on the statements of `file`: from the file's AST (parsed again if it was dropped),
+    /// or, for a file without a FileInfo (external files lose it after ARCH_EVAL), from a
+    /// throwaway parse of the file.
+    fn with_file_stmts<R>(session: &mut SessionInfo, file: SourceFileKey, f: impl FnOnce(&[ruff_python_ast::Stmt]) -> Option<R>) -> Option<R> {
         let path = session.st().file_path(file).to_string();
         let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path);
         match file_info {
@@ -727,24 +733,73 @@ impl FeaturesUtils {
                 }
                 let file_info_ast = file_info.borrow().file_info_ast.clone();
                 let file_info_ast = file_info_ast.borrow();
-                find(file_info_ast.get_stmts()?)
+                f(file_info_ast.get_stmts()?)
             },
             None => {
-                // Completion asks for the signature of every offered function, often all from
-                // the same stub (builtins.pyi): keep the last throwaway parse.
+                // Completion renders the signature and docstring of every offered symbol, mostly
+                // from a few stubs (builtins.pyi): keep the last throwaway parses.
+                type StubParse = (String, Option<std::time::SystemTime>, ruff_python_parser::Parsed<ruff_python_ast::ModModule>);
+                const KEPT_PARSES: usize = 4;
                 thread_local! {
-                    static LAST_PARSE: std::cell::RefCell<Option<(String, Option<std::time::SystemTime>, ruff_python_parser::Parsed<ruff_python_ast::ModModule>)>> = const { std::cell::RefCell::new(None) };
+                    static LAST_PARSES: std::cell::RefCell<std::collections::VecDeque<StubParse>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
                 }
                 let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-                LAST_PARSE.with_borrow_mut(|last| {
-                    if !last.as_ref().is_some_and(|(p, m, _)| *p == path && *m == modified) {
-                        let source = std::fs::read_to_string(&path).ok()?;
-                        let parsed = ruff_python_parser::parse_unchecked_source(&source, ruff_python_ast::PySourceType::from(Path::new(&path)));
-                        *last = Some((path.clone(), modified, parsed));
+                LAST_PARSES.with_borrow_mut(|parses| {
+                    match parses.iter().position(|(p, m, _)| *p == path && *m == modified) {
+                        Some(index) => {
+                            let parse = parses.remove(index)?;
+                            parses.push_front(parse);
+                        },
+                        None => {
+                            let source = std::fs::read_to_string(&path).ok()?;
+                            let parsed = ruff_python_parser::parse_unchecked_source(&source, ruff_python_ast::PySourceType::from(Path::new(&path)));
+                            parses.retain(|(p, _, _)| *p != path);
+                            parses.push_front((path.clone(), modified, parsed));
+                            parses.truncate(KEPT_PARSES);
+                        },
                     }
-                    find(last.as_ref()?.2.suite())
+                    f(parses.front()?.2.suite())
                 })
             }
+        }
+    }
+
+    /// Text of the docstring of `sym`. Docstrings from source are read again from the symbol's
+    /// file: the symbol keeps only the range of the string literal.
+    pub fn doc_string_text(session: &mut SessionInfo, sym: SymbolKey) -> Option<String> {
+        use ruff_python_ast::visitor::source_order::{walk_expr, walk_stmt, SourceOrderVisitor};
+        struct FindString { range: TextRange, found: Option<String> }
+        impl<'a> SourceOrderVisitor<'a> for FindString {
+            fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
+                if self.found.is_none() && stmt.range().contains_range(self.range) {
+                    walk_stmt(self, stmt);
+                }
+            }
+            fn visit_expr(&mut self, expr: &'a Expr) {
+                if self.found.is_some() || !expr.range().contains_range(self.range) {
+                    return;
+                }
+                match expr {
+                    Expr::StringLiteral(s) if s.range == self.range => self.found = Some(s.value.to_string()),
+                    _ => walk_expr(self, expr),
+                }
+            }
+        }
+        match session.st().doc_string(sym)? {
+            DocString::Static(text) => Some(text.to_string()),
+            DocString::Source(range) => {
+                let file = session.st().get_file(sym)?;
+                FeaturesUtils::with_file_stmts(session, file, |stmts| {
+                    let mut visitor = FindString { range, found: None };
+                    for stmt in stmts {
+                        visitor.visit_stmt(stmt);
+                        if visitor.found.is_some() {
+                            break;
+                        }
+                    }
+                    visitor.found
+                })
+            },
         }
     }
 
@@ -941,8 +996,7 @@ impl FeaturesUtils {
     }
 
     /// Documentation block that includes the source module(s) and docstrings if found
-    fn get_documentation_block(session: &SessionInfo, from_modules: &[OYarn], type_refs: &[InferredType]    ) -> Option<String> {
-        let symbol_table = &session.sync_odoo.symbol_table;
+    fn get_documentation_block(session: &mut SessionInfo, from_modules: &[OYarn], type_refs: &[InferredType]    ) -> Option<String> {
         let mut documentation_block = None;
         if !from_modules.is_empty(){
             documentation_block = Some(
@@ -953,8 +1007,8 @@ impl FeaturesUtils {
             );
         }
         for typ in type_refs.iter() {
-            if let Some(sym) = typ.eval_ptr.upgrade_weak(symbol_table) {
-                let doc = FeaturesUtils::get_doc_string(symbol_table, sym);
+            if let Some(sym) = typ.eval_ptr.upgrade_weak(&session.sync_odoo.symbol_table) {
+                let doc = FeaturesUtils::doc_string_text(session, sym);
                 if let Some(ds_str) = doc {
                     // Replace leading spaces with nbsps to avoid it being parsed as a Markdown Codeblock
                     let ds = ds_str
@@ -974,15 +1028,6 @@ impl FeaturesUtils {
             }
         }
         documentation_block
-    }
-
-    fn get_doc_string(symbol_table: & SymbolTable, sym: SymbolKey) -> Option<&String> {
-        match sym {
-            SymbolKey::Class(k) => symbol_table[k].doc_string.as_ref(),
-            SymbolKey::Function(k) => symbol_table[k].doc_string.as_ref(),
-            SymbolKey::Variable(k) => symbol_table[k].doc_string.as_ref(),
-            _ => None,
-        }
     }
 
     pub fn get_line_break(session: &SessionInfo) -> &'static str {

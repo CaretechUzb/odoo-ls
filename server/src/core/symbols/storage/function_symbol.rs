@@ -38,7 +38,7 @@ pub struct FunctionSymbol {
     pub is_external: bool,
     pub is_static: bool,
     pub is_property: bool,
-    pub doc_string: Option<String>,
+    pub doc_string: Option<crate::core::symbols::DocString>,
     pub node_index: AtomicNodeIndex,
     pub diagnostics: HashMap<BuildSteps, Vec<Diagnostic>>, //only temporary used for CLASS and FUNCTION to be collected like others are stored on FileInfo
     pub evaluations: Vec<Evaluation>, //Vec, because sometimes a single allocation can be ambiguous, like ''' a = "5" if X else 5 '''
