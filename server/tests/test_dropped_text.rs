@@ -151,6 +151,43 @@ fn test_dropped_text_changed_on_disk_reloads_the_file() {
     assert_eq!(components, vec!["Welcomer".to_string()]);
 }
 
+/// `scan_text` reads a dropped text again without keeping it: the line table still converts the
+/// positions, and nothing is queued for a reload.
+#[test]
+fn test_scan_text_does_not_keep_the_dropped_text() {
+    let files = write_files();
+    let (mut odoo, config) = server(false);
+    let mut session = setup::setup::create_init_session(&mut odoo, config);
+    for (path, content) in [(&files.xml, XML), (&files.csv, CSV), (&files.js, JS)] {
+        let file_info = load(&mut session, path);
+        let before = positions(&file_info, content);
+        FileMgr::drop_text(&session, &file_info);
+
+        let rereads = TEXT_REREADS.load(Ordering::Relaxed);
+        assert_eq!(FileInfo::scan_text(&file_info, &mut session).as_deref(), Some(content), "{path}");
+        assert!(TEXT_REREADS.load(Ordering::Relaxed) > rereads, "{path}");
+        assert!(!has_text(&file_info), "{path}: a scanned text should not be kept");
+        assert_eq!(positions(&file_info, content), before, "{path}");
+    }
+    assert!(session.sync_odoo.files_changed_on_disk.is_empty(), "unchanged files must not be reloaded");
+}
+
+/// A scanned text that changed on disk is kept, like `text_contents` does, and the file is
+/// reloaded: the line table of the dropped text would not convert the offsets found in it.
+#[test]
+fn test_scan_text_changed_on_disk_keeps_the_text() {
+    let files = write_files();
+    let (mut odoo, config) = server(false);
+    let mut session = setup::setup::create_init_session(&mut odoo, config);
+    let changed = XML.replace("r1", "renamed_record");
+    let file_info = load(&mut session, &files.xml);
+    FileMgr::drop_text(&session, &file_info);
+    fs::write(&files.xml, &changed).unwrap();
+    assert_eq!(FileInfo::scan_text(&file_info, &mut session).as_deref(), Some(changed.as_str()));
+    assert!(has_text(&file_info));
+    assert!(session.sync_odoo.files_changed_on_disk.contains(&files.xml), "the file should be queued for a reload");
+}
+
 /// Opened files keep their text, and `file_cache` keeps every text.
 #[test]
 fn test_opened_or_cached_text_is_kept() {

@@ -559,7 +559,7 @@ pub(crate) fn map_virtual_ref(
 /// component's doc imports its class from a per-file shim instead.
 pub(crate) fn build_virtual_docs(session: &mut SessionInfo, file_info: &Rc<RefCell<FileInfo>>) -> Vec<OwlVirtualDoc> {
     // 1. XML content.
-    let Some(xml) = FileInfo::text_contents(file_info, session) else {
+    let Some(xml) = FileInfo::scan_text(file_info, session) else {
         return vec![];
     };
 
