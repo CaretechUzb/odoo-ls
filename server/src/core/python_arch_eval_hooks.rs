@@ -265,7 +265,7 @@ static arch_eval_function_hooks: LazyLock<Vec<PythonArchEvalFunctionHook>> = Laz
             symbol: EvaluationSymbol::new_with_symbol(Wk::null(),
                 Some(true),
                 Context::default(),
-                Some(GetSymbolHook{callable: PythonArchEvalHooks::eval_env_get_item, name: HookName::EvalEnvGetItem})
+                Some(GetSymbolHook{name: HookName::EvalEnvGetItem})
             ),
             value: None,
             range: None
@@ -280,7 +280,7 @@ static arch_eval_function_hooks: LazyLock<Vec<PythonArchEvalFunctionHook>> = Laz
         ((18, 1), (999, 0), (&["odoo", "orm", "environments"], &["Environment", "user"]))],
         if_exist_only: true,
         func: |odoo, _entry_point, symbol| {
-            PythonArchEvalHooks::set_hook_evaluation(odoo, symbol, PythonArchEvalHooks::eval_env_user, HookName::EvalEnvUser);
+            PythonArchEvalHooks::set_hook_evaluation(odoo, symbol, HookName::EvalEnvUser);
         }
     },
     PythonArchEvalFunctionHook {odoo_entry: true,
@@ -288,7 +288,7 @@ static arch_eval_function_hooks: LazyLock<Vec<PythonArchEvalFunctionHook>> = Laz
         ((18, 1), (999, 0), (&["odoo", "orm", "environments"], &["Environment", "company"]))],
         if_exist_only: true,
         func: |odoo, _entry_point, symbol| {
-            PythonArchEvalHooks::set_hook_evaluation(odoo, symbol, PythonArchEvalHooks::eval_env_company, HookName::EvalEnvCompany);
+            PythonArchEvalHooks::set_hook_evaluation(odoo, symbol, HookName::EvalEnvCompany);
         }
     },
     PythonArchEvalFunctionHook {odoo_entry: true,
@@ -296,7 +296,7 @@ static arch_eval_function_hooks: LazyLock<Vec<PythonArchEvalFunctionHook>> = Laz
         ((18, 1), (999, 0), (&["odoo", "orm", "environments"], &["Environment", "companies"]))],
         if_exist_only: true,
         func: |odoo, _entry_point, symbol| {
-            PythonArchEvalHooks::set_hook_evaluation(odoo, symbol, PythonArchEvalHooks::eval_env_company, HookName::EvalEnvCompany);
+            PythonArchEvalHooks::set_hook_evaluation(odoo, symbol, HookName::EvalEnvCompany);
         }
     },
     // lang is typed str | None and does not depend on any model, so we resolve it eagerly.
@@ -323,7 +323,7 @@ static arch_eval_function_hooks: LazyLock<Vec<PythonArchEvalFunctionHook>> = Laz
             symbol: EvaluationSymbol::new_with_symbol(Wk::null(),
                 Some(true),
                 Context::default(),
-                Some(GetSymbolHook{callable: PythonArchEvalHooks::eval_registry_get_item, name: HookName::EvalRegistryGetItem})
+                Some(GetSymbolHook{name: HookName::EvalRegistryGetItem})
             ),
             value: None,
             range: None
@@ -485,7 +485,7 @@ static arch_eval_function_hooks: LazyLock<Vec<PythonArchEvalFunctionHook>> = Laz
                 fields_class_sym.into(),
                 Some(true),
                 Context::default(),
-                Some(GetSymbolHook{callable: PythonArchEvalHooks::eval_init, name: HookName::EvalInit})
+                Some(GetSymbolHook{name: HookName::EvalInit})
             ),
             value: None,
             range: None,
@@ -966,12 +966,12 @@ impl PythonArchEvalHooks {
     }
 
     /// Set the evaluation of a function to a single hook, resolving its symbol at evaluation time.
-    fn set_hook_evaluation(odoo: &mut SyncOdoo, symbol: FunctionKey, callable: GetSymbolHookCallable, name: HookName) {
+    fn set_hook_evaluation(odoo: &mut SyncOdoo, symbol: FunctionKey, name: HookName) {
         odoo.symbol_table[symbol].evaluations = vec![Evaluation {
             symbol: EvaluationSymbol::new_with_symbol(Wk::null(),
                 Some(true),
                 Context::default(),
-                Some(GetSymbolHook{callable, name})
+                Some(GetSymbolHook{name})
             ),
             value: None,
             range: None
@@ -1163,7 +1163,7 @@ impl PythonArchEvalHooks {
                 return_sym.into(),
                 Some(true),
                 Context::default(),
-                Some(GetSymbolHook{callable: PythonArchEvalHooks::eval_get, name: HookName::EvalGet})
+                Some(GetSymbolHook{name: HookName::EvalGet})
             ),
             value: None,
             range: None
@@ -1192,9 +1192,9 @@ impl PythonArchEvalHooks {
                 Some(true),
                 Context::default(),
                 Some(match relational {
-                    Some(oyarn) if oyarn == oyarn!("One2many") => GetSymbolHook{callable: PythonArchEvalHooks::eval_init_relational_one2many, name: HookName::EvalInitRelationalOne2many},
-                    Some(_) => GetSymbolHook{callable: PythonArchEvalHooks::eval_init_relational, name: HookName::EvalInitRelational},
-                    None => GetSymbolHook{callable: PythonArchEvalHooks::eval_init, name: HookName::EvalInit},
+                    Some(oyarn) if oyarn == oyarn!("One2many") => GetSymbolHook{name: HookName::EvalInitRelationalOne2many},
+                    Some(_) => GetSymbolHook{name: HookName::EvalInitRelational},
+                    None => GetSymbolHook{name: HookName::EvalInit},
                 })
             ),
             value: None,
@@ -1256,7 +1256,7 @@ impl PythonArchEvalHooks {
                 Wk::null(),
                 Some(true),
                 Context::default(),
-                Some(GetSymbolHook{callable: PythonArchEvalHooks::eval_relational, name: HookName::EvalRelational})
+                Some(GetSymbolHook{name: HookName::EvalRelational})
             ),
             value: None,
             range: None,
@@ -1542,7 +1542,7 @@ impl PythonArchEvalHooks {
                 func_sym.into(),
                 Some(true),
                 Context::default(),
-                Some(GetSymbolHook{callable: PythonArchEvalHooks::eval_env_ref, name: HookName::EvalEnvRef})
+                Some(GetSymbolHook{name: HookName::EvalEnvRef})
             ),
             value: None,
             range: None
@@ -1551,4 +1551,22 @@ impl PythonArchEvalHooks {
         diagnostics
     }
 
+}
+
+impl GetSymbolHook {
+    /// The function of the hook.
+    pub fn callable(&self) -> GetSymbolHookCallable {
+        match self.name {
+            HookName::EvalEnvCompany => PythonArchEvalHooks::eval_env_company,
+            HookName::EvalEnvGetItem => PythonArchEvalHooks::eval_env_get_item,
+            HookName::EvalEnvRef => PythonArchEvalHooks::eval_env_ref,
+            HookName::EvalEnvUser => PythonArchEvalHooks::eval_env_user,
+            HookName::EvalGet => PythonArchEvalHooks::eval_get,
+            HookName::EvalInit => PythonArchEvalHooks::eval_init,
+            HookName::EvalInitRelational => PythonArchEvalHooks::eval_init_relational,
+            HookName::EvalInitRelationalOne2many => PythonArchEvalHooks::eval_init_relational_one2many,
+            HookName::EvalRegistryGetItem => PythonArchEvalHooks::eval_registry_get_item,
+            HookName::EvalRelational => PythonArchEvalHooks::eval_relational,
+        }
+    }
 }
