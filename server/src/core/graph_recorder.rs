@@ -12,7 +12,9 @@
 //! - A transient scan records the same edges for one file into a buffer that is never
 //!   persisted. Requests use it for files whose indexed rows are stale.
 
+use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::rc::Rc;
 
 use ruff_python_ast::{Alias, Expr};
 use ruff_text_size::{Ranged, TextRange, TextSize};
@@ -26,6 +28,7 @@ use crate::core::symbols::storage::SymbolTable;
 use crate::core::symbols::symbol_keys::{SourceFileKey, SymbolKey};
 use crate::threads::SessionInfo;
 use crate::utils::{HashMap, HashSet};
+use rustc_hash::FxHasher;
 
 /// An edge as recorded, before node ids are resolved. Offsets are bytes in the unit's file.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -92,6 +95,12 @@ pub struct GraphRecorder {
     pub files_validated: u64,
     /// Files whose nodes were written at ARCH_EVAL.
     pub files_arch_evaluated: u64,
+    /// Edges of transient scans, valid while the rebuild queues and the scanned files are in
+    /// the state `transient_state` was computed from. Emptied when a path is unloaded.
+    transient_cache: HashMap<SourceFileKey, Rc<Vec<PendingEdge>>>,
+    transient_state: u64,
+    /// Transient scans run (not served from `transient_cache`).
+    pub transient_scans: u64,
 }
 
 /// Where a recorded expression goes, given the unit being validated.
@@ -639,6 +648,75 @@ pub fn dirty_files(session: &SessionInfo) -> HashSet<SourceFileKey> {
         }
     }
     files
+}
+
+/// State the edges of a transient scan of the `files` depend on: the rebuild queues (what is
+/// built, what is not) and the content of the files. Unloads empty the cache on their own.
+fn transient_state(session: &SessionInfo, files: &[SourceFileKey]) -> u64 {
+    let mut hasher = FxHasher::default();
+    let st = session.st();
+    let scheduler = &session.sync_odoo.build_scheduler;
+    for queue in [&scheduler.rebuild_arch, &scheduler.rebuild_arch_eval, &scheduler.rebuild_validation] {
+        for sym in queue.iter_valid(st) {
+            sym.hash(&mut hasher);
+        }
+        u32::MAX.hash(&mut hasher);
+    }
+    let file_mgr = session.sync_odoo.get_file_mgr();
+    let file_mgr = file_mgr.borrow();
+    for file in files {
+        file.hash(&mut hasher);
+        file_mgr.get_file_info(st.file_path(*file)).map(|fi| fi.borrow().file_info_ast.borrow().text_hash).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Edges of the transient scans of `files` (see [`transient_scan`]), from the cache when the
+/// queues and the files did not change since they were scanned. `scan` runs the scan of a file.
+pub fn cached_transient_edges(session: &mut SessionInfo, files: &[SourceFileKey], mut scan: impl FnMut(&mut SessionInfo, SourceFileKey) -> Vec<PendingEdge>) -> Vec<Rc<Vec<PendingEdge>>> {
+    let state = transient_state(session, files);
+    if let Some(recorder) = session.sync_odoo.graph_recorder.as_mut()
+        && recorder.transient_state != state {
+            recorder.transient_cache.clear();
+            recorder.transient_state = state;
+        }
+    let mut result = Vec::with_capacity(files.len());
+    for file in files {
+        let cached = session.sync_odoo.graph_recorder.as_ref().and_then(|r| r.transient_cache.get(file).cloned());
+        let edges = match cached {
+            Some(edges) => edges,
+            None => {
+                let edges = Rc::new(scan(session, *file));
+                if let Some(recorder) = session.sync_odoo.graph_recorder.as_mut() {
+                    recorder.transient_scans += 1;
+                    recorder.transient_cache.insert(*file, edges.clone());
+                }
+                edges
+            },
+        };
+        result.push(edges);
+    }
+    result
+}
+
+/// A path was unloaded: symbols the cached scans point at may be gone.
+pub fn on_unload(session: &mut SessionInfo) {
+    if let Some(recorder) = session.sync_odoo.graph_recorder.as_mut() {
+        recorder.transient_cache.clear();
+    }
+}
+
+/// Whether the text of the loaded file at `path` holds one of `names`. True when it cannot be
+/// read: callers use it to skip work, never to drop a result.
+pub fn file_text_mentions(session: &SessionInfo, path: &str, names: &[&str]) -> bool {
+    let Some(file_info) = session.sync_odoo.get_file_mgr().borrow().get_file_info(path) else { return true };
+    let file_info = file_info.borrow();
+    let ast = file_info.file_info_ast.borrow();
+    let mentions = |text: &str| names.iter().any(|name| text.contains(name));
+    match ast.text_document.as_ref() {
+        Some(text_document) => mentions(text_document.contents()),
+        None => std::fs::read_to_string(path).map_or(true, |text| mentions(&text)),
+    }
 }
 
 /// Python file symbol whose file path is `path`.

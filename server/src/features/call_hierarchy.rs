@@ -188,16 +188,31 @@ pub fn model_method(session: &SessionInfo, sym: SymbolKey) -> Option<(String, St
     Some((model.name.to_string(), session.st().name(sym).to_string()))
 }
 
-/// Edges of the files whose indexed rows are stale, from transient scans.
-pub fn dirty_file_edges(session: &mut SessionInfo) -> (HashSet<String>, Vec<PendingEdge>) {
-    let files = graph_recorder::dirty_files(session);
+/// Edges of the files whose indexed rows are stale, from transient scans, for a request on a
+/// symbol named one of `names`. Returns the paths of all those files (their rows must not be
+/// used) and the edges of the ones whose text mentions one of the names: in a file that does
+/// not, an expression can only resolve to such a symbol through a variable bound in another
+/// module, not worth scanning every stale file for. Scans are cached until the queues or the
+/// files change.
+pub fn dirty_file_edges(session: &mut SessionInfo, names: &[&str]) -> (HashSet<String>, Vec<PendingEdge>) {
     let mut paths = HashSet::default();
-    let mut edges = vec![];
-    for file in files {
-        paths.insert(session.st().file_path(file).to_string());
-        edges.extend(ReferenceFeature::graph_scan_file(session, file));
+    let mut to_scan = vec![];
+    for file in graph_recorder::dirty_files(session) {
+        let path = session.st().file_path(file).to_string();
+        if graph_recorder::file_text_mentions(session, &path, names) {
+            to_scan.push(file);
+        }
+        paths.insert(path);
     }
+    let edges = graph_recorder::cached_transient_edges(session, &to_scan, ReferenceFeature::graph_scan_file)
+        .iter().flat_map(|edges| edges.iter().cloned()).collect();
     (paths, edges)
+}
+
+/// Edges of `file` from a transient scan (see [`dirty_file_edges`]).
+fn file_edges(session: &mut SessionInfo, file: SourceFileKey) -> Vec<PendingEdge> {
+    graph_recorder::cached_transient_edges(session, &[file], ReferenceFeature::graph_scan_file)
+        .into_iter().next().map(|edges| edges.as_ref().clone()).unwrap_or_default()
 }
 
 fn path_of(session: &SessionInfo, sym: SymbolKey) -> Option<String> {
@@ -260,7 +275,9 @@ impl CallHierarchyFeature {
         if node.is_none() && target.is_none() {
             return Ok(None);
         }
-        let (dirty_paths, dirty_edges) = dirty_file_edges(session);
+        // a call names its callee (the method name for a model method too)
+        let name = qualname.rsplit('.').next().unwrap_or(&qualname);
+        let (dirty_paths, dirty_edges) = dirty_file_edges(session, &[name]);
         let mut grouped = Grouped::new();
         let mut nodes = NodeCache::default();
         if let Some(node) = node.as_ref() {
@@ -298,7 +315,7 @@ impl CallHierarchyFeature {
         let dirty = source.and_then(|s| session.st().get_file(s)).filter(|f| graph_recorder::dirty_files(session).contains(f));
         match (dirty, source) {
             (Some(file), Some(source)) => {
-                for edge in ReferenceFeature::graph_scan_file(session, file).into_iter().filter(|e| e.kind == EDGE_CALL && e.src == source) {
+                for edge in file_edges(session, file).into_iter().filter(|e| e.kind == EDGE_CALL && e.src == source) {
                     let Some(callee) = edge.dst.and_then(|d| nodes.node(session, d)) else { continue };
                     grouped.add(callee, EdgeSite { path: path.clone(), start: edge.start, end: edge.end });
                 }

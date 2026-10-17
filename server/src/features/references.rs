@@ -436,7 +436,10 @@ impl ReferenceFeature {
                 return None;
             }
         };
-        let (dirty_paths, dirty_edges) = call_hierarchy::dirty_file_edges(session);
+        // a use names its target, or the model for a model-name string
+        let name = session.st().name(target).to_string();
+        let names: Vec<&str> = std::iter::once(name.as_str()).chain(model.as_deref()).collect();
+        let (dirty_paths, dirty_edges) = call_hierarchy::dirty_file_edges(session, &names);
         let mut sites: Vec<(String, u32, u32)> = rows.into_iter()
             .filter(|site| !dirty_paths.contains(&site.path))
             .map(|site| (site.path, site.start, site.end))

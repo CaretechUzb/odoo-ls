@@ -889,6 +889,7 @@ impl SyncOdoo {
     }
 
     pub fn unload_path(session: &mut SessionInfo, path: &Path) {
+        graph_recorder::on_unload(session);
         // file/dir might no longer exist in file system, we can't stat it
         let ep_mgr = session.sync_odoo.entry_point_mgr.clone();
         for entry in ep_mgr.borrow().iter_all() {
