@@ -17,6 +17,7 @@ pub mod lifecycle;
 pub mod symbol_mgr;
 pub mod dependency_mgr;
 pub mod metrics;
+pub mod paged_slot_map;
 pub mod parents;
 pub mod scope_map;
 mod ext_symbol_store;
@@ -30,32 +31,33 @@ use duplicate::duplicate;
 #[cfg(test)]
 use duplicate::duplicate_item;
 use ext_symbol_store::ExtSymbolStore;
-use slotmap::{SlotMap, SparseSecondaryMap};
+use paged_slot_map::PagedSlotMap;
+use slotmap::SparseSecondaryMap;
 use std::ops::{Index, IndexMut};
 pub use parents::{FileContentParent, FileSystemSymbolParent, JsFileParent, XmlDataParent, XmlFieldParent};
 
 #[derive(Debug)]
 pub struct SymbolTable {
     // slotmaps per symbol type
-    roots: SlotMap<RootKey, RootSymbol>,
-    disk_dirs: SlotMap<DiskDirKey, DiskDirSymbol>,
-    namespaces: SlotMap<NamespaceKey, NamespaceSymbol>,
-    python_packages: SlotMap<PythonPackageKey, PythonPackageSymbol>,
-    modules: SlotMap<ModuleKey, ModuleSymbol>,
-    files: SlotMap<FileKey, FileSymbol>,
-    compiled: SlotMap<CompiledKey, CompiledSymbol>,
-    classes: SlotMap<ClassKey, ClassSymbol>,
-    functions: SlotMap<FunctionKey, FunctionSymbol>,
-    variables: SlotMap<VariableKey, VariableSymbol>,
-    xml_files: SlotMap<XmlFileKey, XmlFileSymbol>,
-    csv_files: SlotMap<CsvFileKey, CsvFileSymbol>,
-    xml_records: SlotMap<XmlRecordKey, XmlRecordSymbol>,
-    xml_fields: SlotMap<XmlFieldKey, XmlFieldSymbol>,
-    xml_menuitems: SlotMap<XmlMenuItemKey, XmlMenuItemSymbol>,
-    xml_templates: SlotMap<XmlTemplateKey, XmlTemplateSymbol>,
-    xml_assets: SlotMap<XmlAssetKey, XmlAssetSymbol>,
-    xml_deletes: SlotMap<XmlDeleteKey, XmlDeleteSymbol>,
-    js_files: SlotMap<JsFileKey, JsFileSymbol>,
+    roots: PagedSlotMap<RootKey, RootSymbol>,
+    disk_dirs: PagedSlotMap<DiskDirKey, DiskDirSymbol>,
+    namespaces: PagedSlotMap<NamespaceKey, NamespaceSymbol>,
+    python_packages: PagedSlotMap<PythonPackageKey, PythonPackageSymbol>,
+    modules: PagedSlotMap<ModuleKey, ModuleSymbol>,
+    files: PagedSlotMap<FileKey, FileSymbol>,
+    compiled: PagedSlotMap<CompiledKey, CompiledSymbol>,
+    classes: PagedSlotMap<ClassKey, ClassSymbol>,
+    functions: PagedSlotMap<FunctionKey, FunctionSymbol>,
+    variables: PagedSlotMap<VariableKey, VariableSymbol>,
+    xml_files: PagedSlotMap<XmlFileKey, XmlFileSymbol>,
+    csv_files: PagedSlotMap<CsvFileKey, CsvFileSymbol>,
+    xml_records: PagedSlotMap<XmlRecordKey, XmlRecordSymbol>,
+    xml_fields: PagedSlotMap<XmlFieldKey, XmlFieldSymbol>,
+    xml_menuitems: PagedSlotMap<XmlMenuItemKey, XmlMenuItemSymbol>,
+    xml_templates: PagedSlotMap<XmlTemplateKey, XmlTemplateSymbol>,
+    xml_assets: PagedSlotMap<XmlAssetKey, XmlAssetSymbol>,
+    xml_deletes: PagedSlotMap<XmlDeleteKey, XmlDeleteSymbol>,
+    js_files: PagedSlotMap<JsFileKey, JsFileSymbol>,
     // external symbols
     ext_symbols: ExtSymbolStore,
     // secondary slotmaps
@@ -71,25 +73,25 @@ impl Default for SymbolTable {
 impl SymbolTable {
     pub fn new() -> Self {
         Self {
-            roots: SlotMap::with_key(),
-            disk_dirs: SlotMap::with_key(),
-            namespaces: SlotMap::with_key(),
-            python_packages: SlotMap::with_key(),
-            modules: SlotMap::with_key(),
-            files: SlotMap::with_key(),
-            compiled: SlotMap::with_key(),
-            classes: SlotMap::with_key(),
-            functions: SlotMap::with_key(),
-            variables: SlotMap::with_key(),
-            xml_files: SlotMap::with_key(),
-            csv_files: SlotMap::with_key(),
-            xml_records: SlotMap::with_key(),
-            xml_fields: SlotMap::with_key(),
-            xml_menuitems: SlotMap::with_key(),
-            xml_templates: SlotMap::with_key(),
-            xml_assets: SlotMap::with_key(),
-            xml_deletes: SlotMap::with_key(),
-            js_files: SlotMap::with_key(),
+            roots: PagedSlotMap::with_key(),
+            disk_dirs: PagedSlotMap::with_key(),
+            namespaces: PagedSlotMap::with_key(),
+            python_packages: PagedSlotMap::with_key(),
+            modules: PagedSlotMap::with_key(),
+            files: PagedSlotMap::with_key(),
+            compiled: PagedSlotMap::with_key(),
+            classes: PagedSlotMap::with_key(),
+            functions: PagedSlotMap::with_key(),
+            variables: PagedSlotMap::with_key(),
+            xml_files: PagedSlotMap::with_key(),
+            csv_files: PagedSlotMap::with_key(),
+            xml_records: PagedSlotMap::with_key(),
+            xml_fields: PagedSlotMap::with_key(),
+            xml_menuitems: PagedSlotMap::with_key(),
+            xml_templates: PagedSlotMap::with_key(),
+            xml_assets: PagedSlotMap::with_key(),
+            xml_deletes: PagedSlotMap::with_key(),
+            js_files: PagedSlotMap::with_key(),
             ext_symbols: ExtSymbolStore::new(),
             xml_declared_models: SparseSecondaryMap::new(),
         }
