@@ -523,6 +523,11 @@ impl LineTable {
         (position + remaining).min(line_end.to_u32()) as usize
     }
 
+    /// Heap bytes held by the table, for the build logs.
+    fn heap_size(&self) -> usize {
+        self.index.line_starts().len() * std::mem::size_of::<TextSize>() + std::mem::size_of_val(&*self.wide_runs)
+    }
+
     /// Same as `LineIndex::line_end_exclusive` of the line before the one holding `offset`.
     fn prev_line_end(&self, offset: TextSize) -> TextSize {
         let row = self.index.line_index(offset).to_zero_indexed().saturating_sub(1);
@@ -1324,6 +1329,21 @@ const REPARSED_AST_CAPACITY: usize = 64;
 /// Number of dropped ASTs parsed again, for the build logs.
 pub static AST_REPARSES: AtomicUsize = AtomicUsize::new(0);
 
+/// Number of dropped XML, CSV and JS texts read again from disk, for the build logs.
+pub static TEXT_REREADS: AtomicUsize = AtomicUsize::new(0);
+
+/// What the file texts cost in memory, for the build logs: bytes of the texts kept, per kind of
+/// file, and heap bytes of the [`LineTable`]s standing in for the dropped ones.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TextMemory {
+    pub python: usize,
+    pub xml: usize,
+    pub csv: usize,
+    pub js: usize,
+    pub line_tables: usize,
+    pub line_table_count: usize,
+}
+
 impl Default for FileMgr {
     fn default() -> Self {
         Self::new()
@@ -1396,6 +1416,30 @@ impl FileMgr {
                 Self::try_drop_ast(file_info);
             }
         }
+    }
+
+    /// What the texts of the files cost in memory right now, see [`TextMemory`]. Files borrowed
+    /// at the time are skipped.
+    pub fn text_memory(&self) -> TextMemory {
+        let mut memory = TextMemory::default();
+        for file_info in self.files.values() {
+            let Ok(file_info) = file_info.try_borrow() else { continue };
+            let Ok(file_info_ast) = file_info.file_info_ast.try_borrow() else { continue };
+            if let Some(text_document) = file_info_ast.text_document.as_ref() {
+                let len = text_document.contents().len();
+                match file_info_ast.ast.kind() {
+                    AstKind::PythonAst => memory.python += len,
+                    AstKind::XmlAst => memory.xml += len,
+                    AstKind::CsvAst => memory.csv += len,
+                    AstKind::JsAst => memory.js += len,
+                }
+            }
+            if let Some(line_table) = file_info_ast.line_table.as_ref() {
+                memory.line_tables += line_table.heap_size();
+                memory.line_table_count += 1;
+            }
+        }
+        memory
     }
 
     pub fn get_file_info(&self, path: &str) -> Option<Rc<RefCell<FileInfo>>> {

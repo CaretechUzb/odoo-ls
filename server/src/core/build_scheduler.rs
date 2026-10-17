@@ -229,7 +229,7 @@ impl BuildScheduler {
                 trace!("remains: {:?} - {:?} - {:?}", bs!(session).rebuild_arch.len(), bs!(session).rebuild_arch_eval.len(), bs!(session).rebuild_validation.len());
             }
             if let Some(phase_mem) = phase_mem.as_mut() {
-                phase_mem.check(session.st(), bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
+                phase_mem.check(&session.sync_odoo, bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
             }
             let queue_size = bs!(session).rebuild_arch.len() * 3 + bs!(session).rebuild_arch_eval.len() * 2 + bs!(session).rebuild_validation.len();
             if let Some(reporter) = &mut reporter {
@@ -305,7 +305,7 @@ impl BuildScheduler {
             session.send_notification(OdooNotification::RestartNeeded, ());
         }
         if let Some(phase_mem) = phase_mem.as_mut() {
-            phase_mem.check(session.st(), bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
+            phase_mem.check(&session.sync_odoo, bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
         }
         session.sync_odoo.import_cache = None;
         session.sync_odoo.watched_file_updates = 0;

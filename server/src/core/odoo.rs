@@ -756,7 +756,7 @@ impl SyncOdoo {
         session.sync_odoo.pre_parse_cache = None;
         drop(pre_parser);
 
-        log_phase_memory(session.st(), "module ARCH+ARCH_EVAL built");
+        log_phase_memory(&session.sync_odoo, "module ARCH+ARCH_EVAL built");
         // Run deferred subfunction invalidations
         if let Some(mut files) = session.sync_odoo.deferred_subfunc_invalidation.take() {
             while let Some(file) = files.pop_front_valid(session.st()) {
@@ -782,7 +782,7 @@ impl SyncOdoo {
         }
         session.sync_odoo.pre_parse_cache = None;
         drop(pre_parser);
-        log_phase_memory(session.st(), "module VALIDATION drained");
+        log_phase_memory(&session.sync_odoo, "module VALIDATION drained");
         session.sync_odoo.import_cache = None;
         let modules_count = session.sync_odoo.modules.len();
         reporter.end();
