@@ -291,8 +291,11 @@ impl BuildScheduler {
             reporter.end();
         }
         trace!("Leaving rebuild with remaining tasks: {:?} - {:?} - {:?}", bs!(session).rebuild_arch.len(), bs!(session).rebuild_arch_eval.len(), bs!(session).rebuild_validation.len());
-        // files whose evicted diagnostics could not be read during this rebuild
-        crate::core::diagnostics_store::revalidate_pending(session);
+        // files whose evicted diagnostics could not be read during this rebuild (validating them
+        // again needs the validation step, so not when the caller asked for none)
+        if !no_validation {
+            crate::core::diagnostics_store::revalidate_pending(session);
+        }
         true
     }
 
