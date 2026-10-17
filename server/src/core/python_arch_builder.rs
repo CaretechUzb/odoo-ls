@@ -665,7 +665,7 @@ impl PythonArchBuilder {
                 symbol: param.into(),
                 has_default: arg.default.is_some(),
                 arg_type: ArgumentType::POS_ONLY,
-                annotation: arg.parameter.annotation.clone(),
+                annotation: arg.parameter.annotation.as_ref().map(|annotation| annotation.range()),
             });
         }
         for arg in parameters.args.iter() {
@@ -675,7 +675,7 @@ impl PythonArchBuilder {
                 symbol: param.into(),
                 has_default: arg.default.is_some(),
                 arg_type: ArgumentType::ARG,
-                annotation: arg.parameter.annotation.clone(),
+                annotation: arg.parameter.annotation.as_ref().map(|annotation| annotation.range()),
             });
         }
         if let Some(arg) = &parameters.vararg {
@@ -685,7 +685,7 @@ impl PythonArchBuilder {
                 symbol: param.into(),
                 has_default: false,
                 arg_type: ArgumentType::VARARG,
-                annotation: arg.annotation.clone(),
+                annotation: arg.annotation.as_ref().map(|annotation| annotation.range()),
             });
         }
         for arg in parameters.kwonlyargs.iter() {
@@ -695,7 +695,7 @@ impl PythonArchBuilder {
                 symbol: param.into(),
                 has_default: arg.default.is_some(),
                 arg_type: ArgumentType::KWORD_ONLY,
-                annotation: arg.parameter.annotation.clone(),
+                annotation: arg.parameter.annotation.as_ref().map(|annotation| annotation.range()),
             });
         }
         if let Some(arg) = &parameters.kwarg {
@@ -705,7 +705,7 @@ impl PythonArchBuilder {
                 symbol: param.into(),
                 has_default: false,
                 arg_type: ArgumentType::KWARG,
-                annotation: arg.annotation.clone(),
+                annotation: arg.annotation.as_ref().map(|annotation| annotation.range()),
             });
         }
     }

@@ -1,7 +1,7 @@
 use crate::{core::symbols::storage::FileContentParent, utils::HashMap};
 
 use lsp_types::Diagnostic;
-use ruff_python_ast::{AtomicNodeIndex, Expr, ExprCall};
+use ruff_python_ast::{AtomicNodeIndex, ExprCall};
 use ruff_text_size::{TextRange, TextSize};
 
 use crate::{constants::{BuildStatus, BuildSteps, OYarn}, core::{evaluation::{Evaluation}, file_mgr::NoqaInfo, symbols::{SymbolTable, symbol_keys::{FunctionKey, SymbolKey, VariableKey, Wk}}}, oyarn, threads::SessionInfo};
@@ -27,7 +27,9 @@ pub struct Argument {
     /// Whether the parameter declares a default value (the value itself is never evaluated).
     pub has_default: bool,
     pub arg_type: ArgumentType,
-    pub annotation: Option<Box<Expr>>,
+    /// Range of the annotation in the file of the function declaring this parameter. Only hover
+    /// reads it, by parsing that expression again (see `FeaturesUtils::argument_presentation`).
+    pub annotation: Option<TextRange>,
 }
 
 #[derive(Debug)]

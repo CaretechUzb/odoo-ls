@@ -694,13 +694,59 @@ impl FeaturesUtils {
     }
 
 
+    /// The parameter annotation at `range` in `file`. Arguments keep only that range: take the
+    /// expression from the file's AST (parsed again if it was dropped), or, for a file without
+    /// a FileInfo (external files lose it after ARCH_EVAL), from a throwaway parse of the file.
+    fn annotation_expr(session: &mut SessionInfo, file: SourceFileKey, range: TextRange) -> Option<Expr> {
+        use ruff_python_ast::visitor::source_order::{walk_parameter, SourceOrderVisitor};
+        struct FindAnnotation { range: TextRange, found: Option<Expr> }
+        impl<'a> SourceOrderVisitor<'a> for FindAnnotation {
+            fn visit_parameter(&mut self, parameter: &'a ruff_python_ast::Parameter) {
+                match parameter.annotation.as_deref() {
+                    Some(annotation) if annotation.range() == self.range => self.found = Some(annotation.clone()),
+                    _ => walk_parameter(self, parameter),
+                }
+            }
+        }
+        let find = |stmts: &[ruff_python_ast::Stmt]| {
+            let mut visitor = FindAnnotation { range, found: None };
+            for stmt in stmts {
+                if visitor.found.is_some() || stmt.range().end() < range.start() {
+                    continue;
+                }
+                visitor.visit_stmt(stmt);
+            }
+            visitor.found
+        };
+        let path = session.st().file_path(file).to_string();
+        let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path);
+        match file_info {
+            Some(file_info) => {
+                if !crate::core::file_mgr::FileInfo::ensure_ast(&file_info, session) {
+                    return None;
+                }
+                let file_info_ast = file_info.borrow().file_info_ast.clone();
+                let file_info_ast = file_info_ast.borrow();
+                find(file_info_ast.get_stmts()?)
+            },
+            None => {
+                let source = std::fs::read_to_string(&path).ok()?;
+                let parsed = ruff_python_parser::parse_unchecked_source(&source, ruff_python_ast::PySourceType::from(Path::new(&path)));
+                find(parsed.suite())
+            }
+        }
+    }
+
     /// Given an Argument return its String representation
     /// Attempts to fetch the type hint to return `_arg: _arg_type`
     /// Otherwise just returns the argument name
     fn argument_presentation(session: &mut SessionInfo, arg: &Argument) -> String {
         let arg_symbol = arg.symbol.upgrade(session.st()).unwrap();
         let arg_name = session.st()[arg_symbol].name.clone();
-        match arg.annotation.as_ref() {
+        let anno_expr = arg.annotation.and_then(|range| session.st().parent(arg_symbol)
+            .and_then(|parent| session.st().get_file(parent))
+            .and_then(|file| FeaturesUtils::annotation_expr(session, file, range)));
+        match anno_expr.as_ref() {
             Some(anno_expr) => {
                 let Some(type_symbol) = session.st().parent(arg_symbol)
                 .and_then(|parent| Evaluation::eval_from_ast(session, anno_expr, parent, &anno_expr.range().start(), false, &mut vec![]).0.first().cloned())
