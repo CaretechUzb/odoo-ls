@@ -52,6 +52,19 @@ impl FileContentParent {
         self.symbols_mut(st).insert(name, section, child);
     }
 
+    /// Drops the spare capacity of the scope map and of the flow sections.
+    pub fn shrink_scope(self, st: &mut SymbolTable) {
+        let (symbols, sections) = match self {
+            Self::File(f) => { let s = &mut st[f]; (&mut s.symbols, &mut s.sections) },
+            Self::PythonPackage(p) => { let s = &mut st[p]; (&mut s.symbols, &mut s.sections) },
+            Self::Module(m) => { let s = &mut st[m]; (&mut s.symbols, &mut s.sections) },
+            Self::Class(c) => { let s = &mut st[c]; (&mut s.symbols, &mut s.sections) },
+            Self::Function(f) => { let s = &mut st[f]; (&mut s.symbols, &mut s.sections) },
+        };
+        symbols.shrink_to_fit();
+        sections.shrink_to_fit();
+    }
+
     pub fn children(&self, st: &SymbolTable) -> impl Iterator<Item = SymbolKey> {
         self.as_symbol_mgr(st).symbols().keys().copied()
     }
