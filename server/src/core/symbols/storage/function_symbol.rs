@@ -1,5 +1,6 @@
 use super::scope_map::ScopeMap;
-use crate::{core::symbols::storage::FileContentParent, utils::HashMap};
+use crate::core::symbols::storage::FileContentParent;
+use thin_vec::ThinVec;
 
 use lsp_types::Diagnostic;
 use ruff_python_ast::{AtomicNodeIndex, ExprCall};
@@ -41,7 +42,10 @@ pub struct FunctionSymbol {
     pub is_property: bool,
     pub doc_string: Option<crate::core::symbols::DocString>,
     pub node_index: AtomicNodeIndex,
-    pub diagnostics: HashMap<BuildSteps, Vec<Diagnostic>>, //only temporary used for CLASS and FUNCTION to be collected like others are stored on FileInfo
+    /// Diagnostics of the body per build step, collected by the validation of the parent like
+    /// the ones stored on FileInfo. Only non-empty lists, by step: most functions have none, and
+    /// an empty ThinVec is a pointer with no heap.
+    diagnostics: ThinVec<(BuildSteps, Vec<Diagnostic>)>,
     pub evaluations: Vec<Evaluation>, //Vec, because sometimes a single allocation can be ambiguous, like ''' a = "5" if X else 5 '''
     pub(super) current_build_step: BuildSteps,
     pub(super) build_status: BuildStatus,
@@ -72,7 +76,7 @@ impl FunctionSymbol {
             body_range: TextRange::new(body_start, range.end()),
             is_static: false,
             is_property: false,
-            diagnostics: HashMap::default(),
+            diagnostics: ThinVec::new(),
             node_index: AtomicNodeIndex::default(),
             doc_string: None,
             evaluations: vec![],
@@ -93,7 +97,19 @@ impl FunctionSymbol {
     }
 
     pub fn replace_diagnostics(&mut self, step: BuildSteps, diagnostics: Vec<Diagnostic>) {
-        self.diagnostics.insert(step, diagnostics);
+        let at = self.diagnostics.partition_point(|(s, _)| (*s as u8) < (step as u8));
+        let present = self.diagnostics.get(at).is_some_and(|(s, _)| *s == step);
+        match (present, diagnostics.is_empty()) {
+            (true, true) => { self.diagnostics.remove(at); },
+            (true, false) => self.diagnostics[at].1 = diagnostics,
+            (false, true) => {},
+            (false, false) => self.diagnostics.insert(at, (step, diagnostics)),
+        }
+    }
+
+    /// The diagnostics of every step, in step order.
+    pub fn diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
+        self.diagnostics.iter().flat_map(|(_, diagnostics)| diagnostics)
     }
 
     /*

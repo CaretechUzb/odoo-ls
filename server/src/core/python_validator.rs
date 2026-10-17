@@ -138,7 +138,7 @@ impl PythonValidator {
                         self.validate_body(session, &func_stmt.body);
                         session.current_noqa = old_noqa;
                         let f = self.sym_stack[0].unwrap_function_key();
-                        session.st_mut()[f].diagnostics.insert(BuildSteps::VALIDATION, self.diagnostics.clone());
+                        session.st_mut()[f].replace_diagnostics(BuildSteps::VALIDATION, self.diagnostics.clone());
                     }
                 } else {
                     warn!("no ast found on file info");
@@ -204,7 +204,7 @@ impl PythonValidator {
                             panic!("cyclic validation detected... Aborting");
                         }
                         let f = sym.unwrap_function_key();
-                        self.diagnostics.extend(session.st()[f].diagnostics.values().flat_map(|v| v.clone()));
+                        self.diagnostics.extend(session.st()[f].diagnostics().cloned());
                     }
                 },
                 Stmt::ClassDef(c) => {
