@@ -15,7 +15,7 @@ use crate::constants::SymType;
 use crate::core::file_mgr::FileInfo;
 use crate::core::graph_index::NodeInfo;
 use crate::core::symbols::symbol_keys::{ModelSymbolKey, SourceFileKey, SymbolKey};
-use crate::features::call_hierarchy::{check_index, db_failure, identity_from_data, node_of_symbol, node_row, symbol_of_identity, symbols_at, type_item, RangeConverter};
+use crate::features::call_hierarchy::{check_index, db_failure, graph, identity_from_data, node_of_symbol, node_row, symbol_of_identity, symbols_at, type_item, RangeConverter};
 use crate::threads::SessionInfo;
 
 pub struct TypeHierarchyFeature;
@@ -82,7 +82,7 @@ impl TypeHierarchyFeature {
             Some(SymbolKey::Class(class)) => session.st()[class]._model.as_ref().map(|m| m.name.to_string()),
             _ => node.info.model.clone(),
         };
-        let rows = session.sync_odoo.graph_index.as_ref().unwrap().subtypes(node.id, model.as_deref());
+        let rows = graph(session)?.subtypes(node.id, model.as_deref());
         let rows = rows.map_err(|e| db_failure(session, e))?;
         let mut ranges = RangeConverter::default();
         let infos: Vec<NodeInfo> = rows.into_iter().map(|r| r.info).collect();

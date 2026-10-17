@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::constants::SymType;
 use crate::core::file_mgr::{offset_to_position_with_line_index, FileInfo, FileMgr};
-use crate::core::graph_index::{EdgeSite, NodeInfo, NodeRow, EDGE_CALL, FLAG_SUPER_OF_OVERRIDE, INDEXING_IN_PROGRESS, UNAVAILABLE_PREFIX};
+use crate::core::graph_index::{EdgeSite, GraphIndex, NodeInfo, NodeRow, EDGE_CALL, FLAG_SUPER_OF_OVERRIDE, INDEXING_IN_PROGRESS, UNAVAILABLE_PREFIX};
 use crate::core::graph_recorder::{self, PendingEdge};
 use crate::core::symbols::symbol_keys::{SourceFileKey, SymbolKey};
 use crate::core::text_document::TextDocument;
@@ -30,6 +30,16 @@ pub fn check_index(session: &SessionInfo) -> Result<(), ResponseError> {
         Some(graph) if !graph.ready => Err(ResponseError { code: ErrorCode::ContentModified as i32, message: INDEXING_IN_PROGRESS.to_string(), data: None }),
         Some(_) => Ok(()),
     }
+}
+
+/// The graph index, or the "unavailable" error when it is off. Requests check it again after
+/// anything that may have turned it off since `check_index`: the on-demand builds of a scan
+/// write to it, and a database failure there disables it.
+pub fn graph<'a>(session: &'a SessionInfo) -> Result<&'a GraphIndex, ResponseError> {
+    session.sync_odoo.graph_index.as_ref().ok_or_else(|| {
+        let reason = session.sync_odoo.graph_unavailable.as_deref().unwrap_or("not initialized");
+        ResponseError { code: ErrorCode::RequestFailed as i32, message: format!("{UNAVAILABLE_PREFIX}{reason}"), data: None }
+    })
 }
 
 /// Error for a database failure during a request: the index is turned off for the session.
@@ -222,7 +232,7 @@ impl CallHierarchyFeature {
         let Some((path, qualname, occurrence)) = identity_from_data(item.data.as_ref()) else { return Ok(None) };
         let target = symbol_of_identity(session, &path, &qualname, occurrence);
         let model_method = target.and_then(|t| model_method(session, t));
-        let node = session.sync_odoo.graph_index.as_ref().unwrap().node_by_identity(&path, &qualname, occurrence);
+        let node = graph(session)?.node_by_identity(&path, &qualname, occurrence);
         let node = node.map_err(|e| db_failure(session, e))?;
         if node.is_none() && target.is_none() {
             return Ok(None);
@@ -230,7 +240,7 @@ impl CallHierarchyFeature {
         let (dirty_paths, dirty_edges) = dirty_file_edges(session);
         let mut grouped = Grouped::new();
         if let Some(node) = node.as_ref() {
-            let rows = session.sync_odoo.graph_index.as_ref().unwrap()
+            let rows = graph(session)?
                 .incoming_calls(node.id, model_method.as_ref().map(|(m, n)| (m.as_str(), n.as_str())));
             for (caller, site) in rows.map_err(|e| db_failure(session, e))? {
                 if !dirty_paths.contains(&site.path) {
@@ -269,9 +279,9 @@ impl CallHierarchyFeature {
                 }
             },
             _ => {
-                let node = session.sync_odoo.graph_index.as_ref().unwrap().node_by_identity(&path, &qualname, occurrence);
+                let node = graph(session)?.node_by_identity(&path, &qualname, occurrence);
                 let Some(node) = node.map_err(|e| db_failure(session, e))? else { return Ok(None) };
-                let rows = session.sync_odoo.graph_index.as_ref().unwrap().outgoing_calls(node.id);
+                let rows = graph(session)?.outgoing_calls(node.id);
                 for (callee, site) in rows.map_err(|e| db_failure(session, e))? {
                     grouped.add(callee.info, site);
                 }
@@ -288,6 +298,6 @@ impl CallHierarchyFeature {
 
 /// Rows of a node found by identity, used by the other graph features.
 pub fn node_row(session: &mut SessionInfo, path: &str, qualname: &str, occurrence: u32) -> Result<Option<NodeRow>, ResponseError> {
-    let row = session.sync_odoo.graph_index.as_ref().unwrap().node_by_identity(path, qualname, occurrence);
+    let row = graph(session)?.node_by_identity(path, qualname, occurrence);
     row.map_err(|e| db_failure(session, e))
 }
