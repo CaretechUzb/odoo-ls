@@ -3,7 +3,7 @@ use std::{cell::RefCell, path::{Path, PathBuf}, rc::Rc, sync::atomic::Ordering};
 use lsp_types::MessageType;
 use tracing::{error, info, trace};
 
-use crate::{S, constants::{BuildStatus, BuildSteps, DEBUG_REBUILD_NOW, DEBUG_STEPS, DEBUG_THREADS, MAX_WATCHED_FILES_UPDATES_BEFORE_RESTART}, core::{csv_validation::CsvValidator, graph_recorder, entry_point::EntryPoint, import_resolver::ImportCache, js_validator::JsValidator, odoo::{InitState, OdooNotification}, python_arch_builder::PythonArchBuilder, python_arch_eval::PythonArchEval, python_validator::PythonValidator, symbols::{SymbolTable, symbol_keys::{BuildableSymbolKey, SymbolKey}, symbol_table_impl::CreateError}, xml_validation::XmlValidator}, fifo_ptr_weak_hash_set::FifoWeakHashSet, progress_reporter::ProgressReporterRemaining, threads::SessionInfo, tree::Tree, utils::HashSet};
+use crate::{S, constants::{BuildStatus, BuildSteps, DEBUG_REBUILD_NOW, DEBUG_STEPS, DEBUG_THREADS, MAX_WATCHED_FILES_UPDATES_BEFORE_RESTART}, core::{csv_validation::CsvValidator, graph_recorder, entry_point::EntryPoint, import_resolver::ImportCache, js_validator::JsValidator, odoo::{InitState, Odoo, OdooNotification, SyncOdoo}, python_arch_builder::PythonArchBuilder, python_arch_eval::PythonArchEval, python_validator::PythonValidator, symbols::{SymbolTable, symbol_keys::{BuildableSymbolKey, SymbolKey}, symbol_table_impl::CreateError}, xml_validation::XmlValidator}, fifo_ptr_weak_hash_set::FifoWeakHashSet, progress_reporter::ProgressReporterRemaining, threads::SessionInfo, tree::Tree, utils::HashSet};
 
 #[derive(Debug)]
 pub struct BuildScheduler {
@@ -191,11 +191,24 @@ impl BuildScheduler {
         }
     }
 
+    /// Reload the Python files whose dropped AST was parsed again from a content that changed
+    /// on disk (see `FileInfo::prepare_ast`): their symbols were built from the previous one.
+    /// Same as `SessionInfo::request_update_file_index`, whose event will not come: the file
+    /// info already holds the new content.
+    fn reload_files_changed_on_disk(session: &mut SessionInfo) {
+        for path in std::mem::take(&mut session.sync_odoo.files_changed_on_disk) {
+            info!("Reloading {}: it changed on disk", path);
+            SyncOdoo::unload_path(session, Path::new(&path));
+            Odoo::on_new_path(session, &path);
+        }
+    }
+
     pub fn process_rebuilds(session: &mut SessionInfo, no_validation: bool) -> bool {
         session.sync_odoo.interrupt_rebuild.store(false, Ordering::SeqCst);
         if session.sync_odoo.watched_file_updates > MAX_WATCHED_FILES_UPDATES_BEFORE_RESTART {
             return false;
         }
+        BuildScheduler::reload_files_changed_on_disk(session);
         BuildScheduler::add_from_self_reload(session);
         session.sync_odoo.import_cache = Some(ImportCache::default());
         let mut already_arch_rebuilt: HashSet<Tree> = HashSet::default();
@@ -291,6 +304,10 @@ impl BuildScheduler {
             reporter.end();
         }
         trace!("Leaving rebuild with remaining tasks: {:?} - {:?} - {:?}", bs!(session).rebuild_arch.len(), bs!(session).rebuild_arch_eval.len(), bs!(session).rebuild_validation.len());
+        // files found changed on disk during this rebuild
+        if !session.sync_odoo.files_changed_on_disk.is_empty() && !session.sync_odoo.need_rebuild {
+            return BuildScheduler::process_rebuilds(session, no_validation);
+        }
         // files whose evicted diagnostics could not be read during this rebuild (validating them
         // again needs the validation step, so not when the caller asked for none)
         if !no_validation {

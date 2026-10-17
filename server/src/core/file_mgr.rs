@@ -807,6 +807,7 @@ impl FileInfo {
     /* if ast has been set to none to lower memory usage, try to reload it */
     pub fn prepare_ast(&mut self, session: &mut SessionInfo) {
         let is_python = matches!(self.file_info_ast.borrow().ast, Ast::PythonAst(_));
+        let previous_hash = self.file_info_ast.borrow().text_hash;
         let preloaded = match is_python && self.file_info_ast.borrow().text_document.is_none() {
             // A pre-parse worker may have parsed it ahead of its validation, see `SyncOdoo::build_modules`.
             true => SyncOdoo::take_preloaded(session, &self.uri),
@@ -830,6 +831,17 @@ impl FileInfo {
                 fia.text_hash = hash_text_document(fia.text_document.as_ref().unwrap());
             }
             self._build_ast(session, session.sync_odoo.get_file_mgr().borrow().is_in_workspace(&self.uri));
+        }
+        let new_hash = self.file_info_ast.borrow().text_hash;
+        if is_python && previous_hash != 0 && new_hash != previous_hash {
+            // The file changed on disk since its AST was dropped, and no event told us yet. Its
+            // symbols (node indexes included) were built from the previous content: have it
+            // reloaded. The watcher event, if one comes, will find the file unchanged.
+            warn!("{} changed on disk since it was parsed: reloading it", self.uri);
+            if !session.sync_odoo.files_changed_on_disk.contains(&self.uri) {
+                session.sync_odoo.files_changed_on_disk.push(self.uri.clone());
+            }
+            session.request_delayed_rebuild();
         }
         if is_python && !self.opened && !session.sync_odoo.config.file_cache() {
             AST_REPARSES.fetch_add(1, Ordering::Relaxed);

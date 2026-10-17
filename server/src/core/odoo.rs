@@ -194,6 +194,9 @@ pub struct SyncOdoo {
     pub build_scheduler: BuildScheduler,
     pub state_init: InitState,
     pub must_reload_paths: Vec<(Wk<FileSystemSymbolParent>, String)>, // formerly Weak refs
+    /// Python files whose dropped AST was parsed again from a disk content that is not the one
+    /// their symbols were built from: reloaded by the next rebuild, see `FileInfo::prepare_ast`.
+    pub files_changed_on_disk: Vec<String>,
     pub load_odoo_addons: bool, //indicate if we want to load odoo addons or not
     pub need_rebuild: bool, //if true, the next process_rebuilds will drop everything and rebuild everything
     pub import_cache: Option<ImportCache>,
@@ -260,6 +263,7 @@ impl SyncOdoo {
             build_scheduler: BuildScheduler::new(),
             state_init: InitState::NOT_READY,
             must_reload_paths: vec![],
+            files_changed_on_disk: vec![],
             load_odoo_addons: true,
             need_rebuild: false,
             import_cache: None,
@@ -298,6 +302,7 @@ impl SyncOdoo {
         session.sync_odoo.modules = HashMap::default();
         session.sync_odoo.models = HashMap::default();
         session.sync_odoo.build_scheduler = BuildScheduler::new();
+        session.sync_odoo.files_changed_on_disk.clear();
         session.sync_odoo.state_init = InitState::NOT_READY;
         session.sync_odoo.load_odoo_addons = true;
         session.sync_odoo.need_rebuild = false;

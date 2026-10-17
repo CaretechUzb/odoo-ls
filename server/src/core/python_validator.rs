@@ -106,18 +106,20 @@ impl PythonValidator {
                 let Some(parent_file) = session.st().get_file(symbol) else {
                     panic!("Parent file not found on validating function")
                 };
-                if file_info_rc.borrow().file_info_ast.borrow().text_hash != session.st_mut().get_processed_text_hash(parent_file) {
-                    session.st_mut().set_build_status(symbol.unwrap_buildable_key(), BuildSteps::VALIDATION, BuildStatus::INVALID);
+                if !session.st().ready_for_step(f.into(), BuildSteps::VALIDATION) {
                     return;
                 }
-                if !session.st().ready_for_step(f.into(), BuildSteps::VALIDATION) {
+                // Re-acquire a dropped AST first: the text it is parsed from is the one to compare
+                // with the text the symbols (and their node indexes) were built from.
+                if !file_info_rc.borrow().file_info_ast.borrow().ast.is_built() {
+                    file_info_rc.borrow_mut().prepare_ast(session);
+                }
+                if file_info_rc.borrow().file_info_ast.borrow().text_hash != session.st().get_processed_text_hash(parent_file) {
+                    session.st_mut().set_build_status(symbol.unwrap_buildable_key(), BuildSteps::VALIDATION, BuildStatus::INVALID);
                     return;
                 }
                 self.diagnostics = vec![];
                 session.st_mut().set_build_status(symbol.unwrap_buildable_key(), BuildSteps::VALIDATION, BuildStatus::IN_PROGRESS);
-                if !file_info_rc.borrow().file_info_ast.borrow().ast.is_built() {
-                    file_info_rc.borrow_mut().prepare_ast(session);
-                }
                 let file_info = file_info_rc.borrow();
                 let file_info_ast_rc = file_info.file_info_ast.clone();
                 let file_info_ast = file_info_ast_rc.borrow();
@@ -125,24 +127,18 @@ impl PythonValidator {
                 if let Some(indexed_module) = &file_info_ast.ast.as_py_ast().indexed_module {
                     let func_index = session.st()[f].node_index.load();
                     if func_index != NodeIndex::NONE {
-                        let stmt = indexed_module.get_by_index(func_index);
-                        let body = match stmt {
-                            AnyRootNodeRef::Stmt(Stmt::FunctionDef(s)) => {
-                                &s.body
-                            },
-                            _ => {panic!("Wrong statement in validation ast extraction {} ", SymType::FUNCTION)}
+                        let Some(AnyRootNodeRef::Stmt(Stmt::FunctionDef(func_stmt))) = indexed_module.try_get_by_index(func_index) else {
+                            // Not the tree the function was built from: fail closed.
+                            warn!("node index of {} does not address its definition", session.st().name(symbol));
+                            session.st_mut().set_build_status(symbol.unwrap_buildable_key(), BuildSteps::VALIDATION, BuildStatus::INVALID);
+                            return;
                         };
                         let old_noqa = session.current_noqa.clone();
                         session.current_noqa = session.st().get_noqas(symbol);
-                        self.validate_body(session, body);
+                        self.validate_body(session, &func_stmt.body);
                         session.current_noqa = old_noqa;
-                        match stmt {
-                            AnyRootNodeRef::Stmt(Stmt::FunctionDef(_)) => {
-                                let f = self.sym_stack[0].unwrap_function_key();
-                                session.st_mut()[f].diagnostics.insert(BuildSteps::VALIDATION, self.diagnostics.clone());
-                            },
-                            _ => {panic!("Wrong statement in validation ast extraction {} ", SymType::FUNCTION)}
-                        }
+                        let f = self.sym_stack[0].unwrap_function_key();
+                        session.st_mut()[f].diagnostics.insert(BuildSteps::VALIDATION, self.diagnostics.clone());
                     }
                 } else {
                     warn!("no ast found on file info");
