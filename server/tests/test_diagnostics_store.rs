@@ -57,6 +57,7 @@ fn build_fixture() -> TempDir {
     module.child("models/__init__.py").write_str("from . import diag\n").unwrap();
     module.child("models/diag.py").write_str(PY).unwrap();
     module.child("static/src/bad.js").write_str(JS).unwrap();
+    module.child("static/src/other.js").write_str(JS).unwrap();
     fixture
 }
 
@@ -98,7 +99,8 @@ fn validate_again(session: &mut SessionInfo, path: &str) {
 }
 
 fn published(session: &mut SessionInfo, py: &str, js: &str) -> HashMap<String, Vec<Diagnostic>> {
-    setup::setup::get_diagnostics_for_paths(session, &[py.to_string(), js.to_string()])
+    let other_js = Path::new(js).with_file_name("other.js").sanitize();
+    setup::setup::get_diagnostics_for_paths(session, &[py.to_string(), js.to_string(), other_js])
 }
 
 fn codes(diagnostics: &[Diagnostic]) -> Vec<String> {
@@ -154,10 +156,11 @@ fn test_database_failure_after_eviction() {
     configure(&mut odoo, &mut config, &fixture, graph_dir.path());
     let mut session = setup::setup::create_init_session(&mut odoo, config);
 
+    let other_js = Path::new(&js).with_file_name("other.js").sanitize();
     let initial = published(&mut session, &py, &js);
-    let (initial_py, initial_js) = (initial[&py].clone(), initial[&js].clone());
-    assert!(!initial_py.is_empty() && !initial_js.is_empty());
-    assert!(evicted(&session, &py) && evicted(&session, &js));
+    let (initial_py, initial_js, initial_other_js) = (initial[&py].clone(), initial[&js].clone(), initial[&other_js].clone());
+    assert!(!initial_py.is_empty() && !initial_js.is_empty() && !initial_other_js.is_empty());
+    assert!(evicted(&session, &py) && evicted(&session, &js) && evicted(&session, &other_js));
 
     // A real failure: the database file is emptied under the open connection, so the next
     // statement finds no table.
@@ -184,6 +187,14 @@ fn test_database_failure_after_eviction() {
     let after = published(&mut session, &py, &js);
     assert_eq!(after.get(&py), Some(&initial_py));
     assert!(!evicted(&session, &py));
-    assert!(!session.sync_odoo.diagnostics_store.lost.contains(&js) && !session.sync_odoo.diagnostics_store.lost.contains(&py));
-    assert!(session.sync_odoo.diagnostics_store.revalidations >= 2);
+
+    // a non-opened JS file is validated again (asset reloaded) when a publish needs them
+    validate_again(&mut session, &other_js);
+    let after = published(&mut session, &py, &js);
+    assert_eq!(after.get(&other_js), Some(&initial_other_js));
+    assert!(!evicted(&session, &other_js));
+    for path in [&py, &js, &other_js] {
+        assert!(!session.sync_odoo.diagnostics_store.lost.contains(path), "{path} validated again");
+    }
+    assert!(session.sync_odoo.diagnostics_store.revalidations >= 3);
 }
