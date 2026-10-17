@@ -139,8 +139,18 @@ impl PythonArchEval {
         } else {
             if self.file_mode {
                 BuildScheduler::queue(session, self.sym_stack[0].unwrap_buildable_key());
-                // Validation parses the file again: do not hold its AST until then.
-                FileMgr::drop_ast(session, &file_info_rc);
+                if !session.sync_odoo.config.file_cache() {
+                    if session.sync_odoo.pre_parse_cache().is_some() {
+                        // Initial build: validation comes much later and the pre-parser parses
+                        // the file again ahead of it. Do not hold the AST until then.
+                        FileMgr::drop_ast(session, &file_info_rc);
+                    } else {
+                        // A rebuild validates the file right after: keep its AST for that, among
+                        // the few re-parsed ASTs kept (a large rebuild drops the oldest).
+                        let path = session.st().file_path(self.file).to_string();
+                        session.sync_odoo.get_file_mgr().borrow().keep_reparsed_ast(&path);
+                    }
+                }
             }
         }
     }
