@@ -308,8 +308,7 @@ impl ReferenceFeature {
     /// `t-call` / `t-inherit` value); defers to [`collect_template_name_references`].
     fn references_xml_owl(session: &mut SessionInfo, file_info: &Rc<RefCell<FileInfo>>, line: u32, character: u32) -> Option<Vec<Location>> {
         let encoding = session.sync_odoo.encoding;
-        let data = file_info.borrow().file_info_ast.borrow()
-            .text_document.as_ref()?.contents().to_string();
+        let data = FileInfo::text_contents(file_info, session)?;
         let offset = file_info.borrow().position_to_offset(line, character, encoding);
 
         let document = roxmltree::Document::parse(&data).ok()?;

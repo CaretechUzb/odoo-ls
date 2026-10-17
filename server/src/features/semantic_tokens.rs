@@ -155,16 +155,15 @@ impl SemanticTokensFeature {
         // 1. Template-name tokens. Independent of tsserver: the ranges come from our own AST pass.
         let mut raw: Vec<(Range, u32, u32)> = Self::template_ref_tokens(session, file_info);
 
-        // Snapshot the content first: we need it to map offsets to positions, and we
-        // must not hold the borrow across the `&mut session` bridge call below.
-        let content = {
-            let fi = file_info.borrow();
-            let fia = fi.file_info_ast.borrow();
-            fia.text_document.as_ref().map(|td| td.contents().to_string())
-        };
-
         // 2. tsserver's classifier. Without a bridge (CLI / most tests) we keep only the
         //    template-name tokens above and let the client's grammar handle the rest.
+        // Snapshot the content first: we need it to map offsets to positions, and we
+        // must not hold the borrow across the `&mut session` bridge call below. A dropped
+        // text is read again only when there is a bridge to use it.
+        let content = match session.sync_odoo.tsserver_bridge.is_some() {
+            true => FileInfo::text_contents(file_info, session),
+            false => None,
+        };
         if let Some(content) = content {
             let spans = match session.sync_odoo.tsserver_bridge.as_mut() {
                 Some(bridge) => bridge.get_semantic_tokens(file_path),

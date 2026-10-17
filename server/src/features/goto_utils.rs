@@ -235,7 +235,7 @@ impl GotoUtils {
         character: u32
     ) -> Vec<GotoSource> {
         let offset = file_info.borrow().position_to_offset(line, character, session.sync_odoo.encoding);
-        let Some(data) = file_info.borrow().file_info_ast.borrow().text_document.as_ref().map(|td| td.contents().to_string()) else {
+        let Some(data) = FileInfo::text_contents(file_info, session) else {
             // File can be invalid (not valid UTF-8 and so text_document is empty)
             return vec![];
         };
@@ -266,7 +266,7 @@ impl GotoUtils {
         let model_name_pb = Path::new(session.st().path(file_symbol));
         let model_name = Sy!(model_name_pb.file_stem().unwrap().to_str().unwrap().to_string());
         let offset = file_info.borrow().position_to_offset(line, character, session.sync_odoo.encoding);
-        let Some(data) = file_info.borrow().file_info_ast.borrow().text_document.as_ref().map(|td| td.contents().to_string()) else {
+        let Some(data) = FileInfo::text_contents(file_info, session) else {
             // File can be invalid (not valid UTF-8 and so text_document is empty)
             return vec![];
         };

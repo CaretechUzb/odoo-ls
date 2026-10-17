@@ -83,8 +83,7 @@ impl DefinitionFeature {
         character: u32,
     ) -> Option<GotoDefinitionResponse> {
         let encoding = session.sync_odoo.encoding;
-        let data = file_info.borrow().file_info_ast.borrow()
-            .text_document.as_ref()?.contents().to_string();
+        let data = FileInfo::text_contents(file_info, session)?;
         let offset = file_info.borrow().position_to_offset(line, character, encoding);
         let document = roxmltree::Document::parse(&data).ok()?;
 
