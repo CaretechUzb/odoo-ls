@@ -488,9 +488,19 @@ fn put_index(session: &mut SessionInfo, graph: GraphIndex) {
     session.sync_odoo.graph_index = Some(graph);
 }
 
-/// Node id of `sym`, writing its node if this session has not written it yet.
-fn node_id(session: &SessionInfo, graph: &mut GraphIndex, sym: SymbolKey, texts: &mut HashMap<String, Option<String>>) -> Result<Option<i64>, String> {
-    if let Some(id) = graph.cached_node(sym) {
+/// Node id of `sym`, writing its node if this session has not written it yet. `ids` keeps the
+/// answers for the unit being written.
+fn node_id(session: &SessionInfo, graph: &mut GraphIndex, sym: SymbolKey, texts: &mut HashMap<String, Option<String>>, ids: &mut HashMap<SymbolKey, Option<i64>>) -> Result<Option<i64>, String> {
+    if let Some(&id) = ids.get(&sym) {
+        return Ok(id);
+    }
+    let id = resolve_node_id(session, graph, sym, texts)?;
+    ids.insert(sym, id);
+    Ok(id)
+}
+
+fn resolve_node_id(session: &SessionInfo, graph: &mut GraphIndex, sym: SymbolKey, texts: &mut HashMap<String, Option<String>>) -> Result<Option<i64>, String> {
+    if let Some(id) = graph.cached_node(sym)? {
         return Ok(Some(id));
     }
     let st = session.st();
@@ -505,7 +515,8 @@ fn write_unit(session: &mut SessionInfo, unit: SymbolKey, file: SourceFileKey, e
     let mut graph = take_index(session)?;
     let result = (|| {
         let mut texts: HashMap<String, Option<String>> = HashMap::default();
-        let Some(owner) = node_id(session, &mut graph, unit, &mut texts)? else { return Ok(()) };
+        let mut ids: HashMap<SymbolKey, Option<i64>> = HashMap::default();
+        let Some(owner) = node_id(session, &mut graph, unit, &mut texts, &mut ids)? else { return Ok(()) };
         let from_file = graph.file_id(session.st().file_path(file))?;
         // A CALL edge also stands for the REF edge of its callee expression (same site, same
         // target): references read both kinds, so the REF row is not written.
@@ -516,9 +527,9 @@ fn write_unit(session: &mut SessionInfo, unit: SymbolKey, file: SourceFileKey, e
             if edge.kind == EDGE_REF && calls.contains(&(edge.src, edge.dst, edge.start, edge.end)) {
                 continue;
             }
-            let Some(src) = node_id(session, &mut graph, edge.src, &mut texts)? else { continue };
+            let Some(src) = node_id(session, &mut graph, edge.src, &mut texts, &mut ids)? else { continue };
             let dst = match edge.dst {
-                Some(dst) => match node_id(session, &mut graph, dst, &mut texts)? {
+                Some(dst) => match node_id(session, &mut graph, dst, &mut texts, &mut ids)? {
                     Some(id) => Some(id),
                     None => continue,
                 },
@@ -566,7 +577,7 @@ pub fn disable(session: &mut SessionInfo, reason: &str) {
 }
 
 /// Hook at the start of `SyncOdoo::init`: open the index (once per `SyncOdoo`) or clear it,
-/// then hand it to its writer thread for the initial build.
+/// then start the initial build.
 pub fn on_init(session: &mut SessionInfo) {
     crate::core::diagnostics_store::reset(session);
     if session.sync_odoo.graph_unavailable.is_some() && session.sync_odoo.graph_index.is_none() {
@@ -601,8 +612,8 @@ pub fn on_init(session: &mut SessionInfo) {
     session.sync_odoo.graph_recorder = Some(GraphRecorder::default());
 }
 
-/// Hook at the end of `SyncOdoo::init`: the initial build has drained; once the writer thread
-/// has written everything, the index is ready.
+/// Hook at the end of `SyncOdoo::init`: the initial build has drained; once its writes are
+/// committed and the request indexes built, the index is ready.
 pub fn on_init_done(session: &mut SessionInfo) {
     let store = &session.sync_odoo.diagnostics_store;
     info!("Diagnostics out of RAM: {} files stored, {} loaded back, {} validated again", store.evictions, store.loads, store.revalidations);
