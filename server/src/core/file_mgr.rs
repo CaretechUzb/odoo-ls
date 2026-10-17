@@ -410,64 +410,117 @@ impl FileInfoAst {
     }
 }
 
-/// What is kept of a dropped [`TextDocument`]: its line starts and length. That is enough to turn an
-/// offset into a position, except for UTF-16/32 columns on a line holding non-ASCII text, for which
-/// the file is read again (but not parsed).
+/// What is kept of a dropped [`TextDocument`]: its line starts, its length and where its
+/// non-ASCII characters are. That is enough to convert between offsets and positions in every
+/// encoding exactly as the text would, without reading the file again.
 #[derive(Debug)]
 struct LineTable {
     index: LineIndex,
     text_len: TextSize,
-    /// Zero-based numbers of the lines holding non-ASCII text, sorted.
-    non_ascii_lines: Box<[u32]>,
+    /// The non-ASCII characters, as runs of consecutive characters of the same widths, sorted.
+    /// Empty for an ASCII text.
+    wide_runs: Box<[WideRun]>,
+}
+
+/// Consecutive non-ASCII characters of the same UTF-8 and UTF-16 widths. A run never spans two
+/// lines: line ends are ASCII.
+#[derive(Debug, Clone, Copy)]
+struct WideRun {
+    start: u32,
+    chars: u16,
+    utf8_width: u8,
+    utf16_width: u8,
+}
+
+impl WideRun {
+    fn end(&self) -> u32 {
+        self.start + self.chars as u32 * self.utf8_width as u32
+    }
+
+    /// Code units of one character of the run in `encoding` (UTF-8 never gets here).
+    fn units(&self, encoding: PositionEncoding) -> u32 {
+        match encoding {
+            PositionEncoding::Utf16 => self.utf16_width as u32,
+            _ => 1,
+        }
+    }
 }
 
 impl LineTable {
     fn new(text_document: &TextDocument) -> Self {
         let index = text_document.index().clone();
-        let text = text_document.contents().as_bytes();
-        let non_ascii_lines = if index.is_ascii() {
-            Box::default()
-        } else {
-            let starts = index.line_starts();
-            (0..starts.len())
-                .filter(|&row| {
-                    let end = starts.get(row + 1).map_or(text.len(), |start| start.to_usize());
-                    !text[starts[row].to_usize()..end].is_ascii()
-                })
-                .map(|row| row as u32)
-                .collect()
-        };
-        Self { index, text_len: TextSize::of(text_document.contents()), non_ascii_lines }
+        let text = text_document.contents();
+        let mut wide_runs: Vec<WideRun> = vec![];
+        if !index.is_ascii() {
+            for (offset, c) in text.char_indices().filter(|(_, c)| !c.is_ascii()) {
+                let (offset, utf8_width, utf16_width) = (offset as u32, c.len_utf8() as u8, c.len_utf16() as u8);
+                match wide_runs.last_mut() {
+                    Some(run) if run.end() == offset && run.utf8_width == utf8_width && run.utf16_width == utf16_width && run.chars < u16::MAX => {
+                        run.chars += 1;
+                    },
+                    _ => wide_runs.push(WideRun { start: offset, chars: 1, utf8_width, utf16_width }),
+                }
+            }
+        }
+        Self { index, text_len: TextSize::of(text), wide_runs: wide_runs.into_boxed_slice() }
+    }
+
+    /// Runs on the line `[line_start, line_end)`.
+    fn runs_of_line(&self, line_start: TextSize, line_end: TextSize) -> &[WideRun] {
+        let first = self.wide_runs.partition_point(|run| run.start < line_start.to_u32());
+        let last = self.wide_runs.partition_point(|run| run.start < line_end.to_u32());
+        &self.wide_runs[first..last.max(first)]
     }
 
     /// Same as [`offset_to_position_with_line_index`] on the dropped text.
-    fn offset_to_position(&self, path: &str, offset: u32, encoding: PositionEncoding) -> Position {
-        if let Some(position) = self.offset_to_position_in_memory(offset, encoding) {
-            return position;
-        }
+    fn offset_to_position(&self, offset: u32, encoding: PositionEncoding) -> Position {
         let offset = TextSize::new(offset).min(self.text_len);
         let row = self.index.line_index(offset).to_zero_indexed();
         let line_start = self.index.line_starts()[row];
-        let bytes = (offset - line_start).to_usize();
-        let character = Self::with_disk_text(path, |text_document| {
-            text_document.contents().get(line_start.to_usize()..offset.to_usize()).map(|s| match encoding {
-                PositionEncoding::Utf16 => s.encode_utf16().count(),
-                _ => s.chars().count(),
-            })
-        }).flatten().unwrap_or(bytes);
-        Position::new(row as u32, character as u32)
+        let mut character = (offset - line_start).to_u32();
+        if !matches!(encoding, PositionEncoding::Utf8) {
+            for run in self.runs_of_line(line_start, offset) {
+                let covered = run.chars as u32 * run.utf8_width as u32;
+                let covered = covered.min(offset.to_u32() - run.start) / run.utf8_width as u32;
+                character -= covered * (run.utf8_width as u32 - run.units(encoding));
+            }
+        }
+        Position::new(row as u32, character)
     }
 
-    /// [`Self::offset_to_position`] when the table alone can answer: None for a UTF-16/32
-    /// column on a line holding non-ASCII text.
-    fn offset_to_position_in_memory(&self, offset: u32, encoding: PositionEncoding) -> Option<Position> {
-        let offset = TextSize::new(offset).min(self.text_len);
-        let row = self.index.line_index(offset).to_zero_indexed();
-        if !matches!(encoding, PositionEncoding::Utf8) && self.non_ascii_lines.binary_search(&(row as u32)).is_ok() {
-            return None;
+    /// Same as [`position_to_offset_with_line_index`] on the dropped text (`LineIndex::offset`:
+    /// a column past the end of the line stops after its line end, a line past the end of the
+    /// text is the end of the text).
+    fn position_to_offset(&self, line: u32, character: u32, encoding: PositionEncoding) -> usize {
+        let starts = self.index.line_starts();
+        let line = line as usize;
+        if line >= starts.len() {
+            return self.text_len.to_usize();
         }
-        let line_start = self.index.line_starts()[row];
-        Some(Position::new(row as u32, (offset - line_start).to_u32()))
+        let line_start = starts[line];
+        let line_end = starts.get(line + 1).copied().unwrap_or(self.text_len);
+        if self.wide_runs.is_empty() || matches!(encoding, PositionEncoding::Utf8) {
+            return (line_start + TextSize::new(character)).min(line_end).to_usize();
+        }
+        // Characters are taken until `character` code units are reached, as `LineIndex::offset`
+        // does: a character that straddles it is taken whole.
+        let mut position = line_start.to_u32();
+        let mut remaining = character;
+        for run in self.runs_of_line(line_start, line_end) {
+            let ascii = run.start - position;
+            if remaining <= ascii {
+                return (position + remaining) as usize;
+            }
+            remaining -= ascii;
+            position = run.start;
+            let units = run.units(encoding);
+            if remaining <= run.chars as u32 * units {
+                return (position + remaining.div_ceil(units) * run.utf8_width as u32) as usize;
+            }
+            remaining -= run.chars as u32 * units;
+            position = run.end();
+        }
+        (position + remaining).min(line_end.to_u32()) as usize
     }
 
     /// Same as `LineIndex::line_end_exclusive` of the line before the one holding `offset`.
@@ -477,18 +530,6 @@ impl LineTable {
             Some(next_line_start) => *next_line_start - TextSize::new(1),
             None => self.text_len,
         }
-    }
-
-    /// Offset of a position, counting columns in bytes: only for a file that can no longer be read.
-    fn approximate_offset(&self, line: u32, character: u32) -> usize {
-        let line_start = self.index.line_starts().get(line as usize).copied().unwrap_or(self.text_len);
-        (line_start + TextSize::new(character)).min(self.text_len).to_usize()
-    }
-
-    /// Read `path` from disk, for the conversions the table alone cannot do.
-    fn with_disk_text<R>(path: &str, f: impl FnOnce(&TextDocument) -> R) -> Option<R> {
-        let contents = fs::read_to_string(path).ok()?;
-        Some(f(&TextDocument::new(contents, -1)))
     }
 }
 
@@ -1195,7 +1236,7 @@ impl FileInfo {
     pub fn offset_to_position(&self, offset: u32, encoding: PositionEncoding) -> Position {
         let fia = self.file_info_ast.borrow();
         if let Some(line_table) = fia.dropped_line_table() {
-            return line_table.offset_to_position(&self.uri, offset, encoding);
+            return line_table.offset_to_position(offset, encoding);
         }
         FileInfo::offset_to_position_with_text_document(fia.text_document.as_ref().expect("no text_document provided"), offset, encoding)
     }
@@ -1203,19 +1244,19 @@ impl FileInfo {
     fn try_offset_to_position(&self, offset: u32, encoding: PositionEncoding) -> Option<Position> {
         let fia = self.file_info_ast.borrow();
         if let Some(line_table) = fia.dropped_line_table() {
-            return Some(line_table.offset_to_position(&self.uri, offset, encoding));
+            return Some(line_table.offset_to_position(offset, encoding));
         }
         FileInfo::try_offset_to_position_with_text_document(fia.text_document.as_ref()?, offset, encoding)
     }
 
     /// Position of `offset` from what is in memory: the text, or the [`LineTable`] of a dropped
-    /// text when it can answer without reading the file. None otherwise.
+    /// text. None when there is neither (the file was never read).
     pub fn offset_to_position_in_memory(&self, offset: u32, encoding: PositionEncoding) -> Option<Position> {
         let fia = self.file_info_ast.borrow();
         if let Some(text_document) = fia.text_document.as_ref() {
             return Some(offset_to_position_with_line_index(text_document.index(), text_document.contents(), offset as usize, encoding));
         }
-        fia.line_table.as_ref()?.offset_to_position_in_memory(offset, encoding)
+        Some(fia.line_table.as_ref()?.offset_to_position(offset, encoding))
     }
 
     pub fn text_range_to_range(&self, range: TextRange, encoding: PositionEncoding) -> Range {
@@ -1246,8 +1287,7 @@ impl FileInfo {
     pub fn position_to_offset(&self, line: u32, char: u32, encoding: PositionEncoding) -> usize {
         let fia = self.file_info_ast.borrow();
         if let Some(line_table) = fia.dropped_line_table() {
-            return LineTable::with_disk_text(&self.uri, |td| FileInfo::position_to_offset_with_text_document(td, line, char, encoding))
-                .unwrap_or_else(|| line_table.approximate_offset(line, char));
+            return line_table.position_to_offset(line, char, encoding);
         }
         FileInfo::position_to_offset_with_text_document(fia.text_document.as_ref().expect("no text_document provided"), line, char, encoding)
     }
@@ -1849,36 +1889,52 @@ export class Counter extends Component {
 mod line_table_tests {
     use super::*;
 
-    /// A dropped text keeps converting offsets exactly as the text did, including UTF-16/32
-    /// columns on non-ASCII lines (read back from disk) and CRLF line ends.
+    /// A dropped text keeps converting offsets and positions exactly as the text did, in every
+    /// encoding: 2-, 3- and 4-byte characters, adjacent runs of different widths, CRLF line
+    /// ends, no trailing newline, columns and lines past the end.
     #[test]
     fn line_table_matches_the_text_document() {
-        let text = "ascii = 1\nстрока = 'é'\r\n😀 = 2\n\nlast";
-        let dir = std::env::temp_dir().join(format!("odools_line_table_{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("file.py");
-        fs::write(&path, text).unwrap();
-        let path = path.sanitize();
-        let text_document = TextDocument::new(text.to_string(), -1);
-        let table = LineTable::new(&text_document);
-        assert_eq!(&*table.non_ascii_lines, &[1, 2]);
-        let offsets = (0..=text.len() + 3).filter(|&offset| offset > text.len() || text.is_char_boundary(offset));
-        for offset in offsets {
-            for encoding in [PositionEncoding::Utf8, PositionEncoding::Utf16, PositionEncoding::Utf32] {
-                assert_eq!(
-                    table.offset_to_position(&path, offset as u32, encoding),
-                    FileInfo::offset_to_position_with_text_document(&text_document, offset as u32, encoding),
-                    "offset {offset}, {encoding:?}"
-                );
+        let texts = [
+            "",
+            "ascii = 1\nonly\n",
+            "ascii = 1\nстрока = 'é'\r\n😀 = 2\n\nlast",
+            "é中😀é中😀\n中文字符 = '😀😀'\r\n\r\nx = 'ééé' + \"😀\"\nend é",
+            "# -*- coding: utf-8 -*-\n# Комментарий: ünïcödé ✓\ndef f():\n    return 'Привет, мир 🌍'\n",
+            "😀\n",
+        ];
+        for text in texts {
+            let text_document = TextDocument::new(text.to_string(), -1);
+            let table = LineTable::new(&text_document);
+            let index = text_document.index();
+            let offsets = (0..=text.len() + 3).filter(|&offset| offset > text.len() || text.is_char_boundary(offset));
+            for offset in offsets {
+                for encoding in [PositionEncoding::Utf8, PositionEncoding::Utf16, PositionEncoding::Utf32] {
+                    assert_eq!(
+                        table.offset_to_position(offset as u32, encoding),
+                        FileInfo::offset_to_position_with_text_document(&text_document, offset as u32, encoding),
+                        "{text:?}: offset {offset}, {encoding:?}"
+                    );
+                }
+                if offset <= text.len() {
+                    let offset = TextSize::new(offset as u32);
+                    let line = index.line_index(offset);
+                    let prev_line = line.checked_sub(OneIndexed::new(1).unwrap()).unwrap_or(line);
+                    assert_eq!(table.prev_line_end(offset), index.line_end_exclusive(prev_line, text), "{text:?}: offset {offset:?}");
+                }
             }
-            if offset <= text.len() {
-                let offset = TextSize::new(offset as u32);
-                let index = text_document.index();
-                let line = index.line_index(offset);
-                let prev_line = line.checked_sub(OneIndexed::new(1).unwrap()).unwrap_or(line);
-                assert_eq!(table.prev_line_end(offset), index.line_end_exclusive(prev_line, text), "offset {offset:?}");
+            let lines = index.line_starts().len() as u32;
+            let longest = text.lines().map(|l| l.len()).max().unwrap_or(0) as u32;
+            for line in 0..=lines + 1 {
+                for character in 0..=longest + 3 {
+                    for encoding in [PositionEncoding::Utf8, PositionEncoding::Utf16, PositionEncoding::Utf32] {
+                        assert_eq!(
+                            table.position_to_offset(line, character, encoding),
+                            FileInfo::position_to_offset_with_text_document(&text_document, line, character, encoding),
+                            "{text:?}: {line}:{character}, {encoding:?}"
+                        );
+                    }
+                }
             }
         }
-        let _ = fs::remove_dir_all(&dir);
     }
 }

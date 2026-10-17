@@ -49,8 +49,8 @@ pub fn db_failure(session: &mut SessionInfo, reason: String) -> ResponseError {
 }
 
 /// Converts byte offsets to LSP ranges. A loaded file answers from its text, or from the line
-/// table kept when its text was dropped; other files, and the lines the line table cannot
-/// convert alone, are read from disk once per file (never parsed).
+/// table kept when its text was dropped; other files are read from disk once per file (never
+/// parsed).
 #[derive(Default)]
 pub struct RangeConverter {
     files: HashMap<String, Option<Rc<RefCell<FileInfo>>>>,
