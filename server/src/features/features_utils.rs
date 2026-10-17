@@ -730,9 +730,20 @@ impl FeaturesUtils {
                 find(file_info_ast.get_stmts()?)
             },
             None => {
-                let source = std::fs::read_to_string(&path).ok()?;
-                let parsed = ruff_python_parser::parse_unchecked_source(&source, ruff_python_ast::PySourceType::from(Path::new(&path)));
-                find(parsed.suite())
+                // Completion asks for the signature of every offered function, often all from
+                // the same stub (builtins.pyi): keep the last throwaway parse.
+                thread_local! {
+                    static LAST_PARSE: std::cell::RefCell<Option<(String, Option<std::time::SystemTime>, ruff_python_parser::Parsed<ruff_python_ast::ModModule>)>> = const { std::cell::RefCell::new(None) };
+                }
+                let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                LAST_PARSE.with_borrow_mut(|last| {
+                    if !last.as_ref().is_some_and(|(p, m, _)| *p == path && *m == modified) {
+                        let source = std::fs::read_to_string(&path).ok()?;
+                        let parsed = ruff_python_parser::parse_unchecked_source(&source, ruff_python_ast::PySourceType::from(Path::new(&path)));
+                        *last = Some((path.clone(), modified, parsed));
+                    }
+                    find(last.as_ref()?.2.suite())
+                })
             }
         }
     }
