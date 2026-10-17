@@ -32,15 +32,25 @@ pub fn log_memory_usage(label: &str) {
 #[cfg(not(all(not(debug_assertions), any(target_os = "linux", target_os = "macos"))))]
 pub fn log_memory_usage(_label: &str) {}
 
-/// Logs memory + symbol counts once per initial-build phase (ARCH, ARCH_EVAL, VALIDATION queues drained).
+/// Logs memory + symbol counts once per initial-build phase (ARCH, ARCH_EVAL, VALIDATION queues
+/// drained). A phase is logged only if its queue held something during the rebuild.
 #[derive(Default)]
-pub struct PhaseMemoryLogger { arch: bool, eval: bool }
+pub struct PhaseMemoryLogger { arch: bool, eval: bool, val: bool, arch_seen: bool, eval_seen: bool, val_seen: bool }
 
 impl PhaseMemoryLogger {
+    /// A logger for a `process_rebuilds` call, or None (nothing to log, nothing to pay): only
+    /// the builds of the initialization are logged, and only when there is something to build.
+    pub fn for_rebuild(initializing: bool, queues_empty: bool) -> Option<Self> {
+        (initializing && !queues_empty).then(Self::default)
+    }
+
     pub fn check(&mut self, st: &SymbolTable, arch_empty: bool, eval_empty: bool, val_empty: bool) {
-        if arch_empty && !self.arch { self.arch = true; self.log(st, "ARCH drained"); }
-        if arch_empty && eval_empty && !self.eval { self.eval = true; self.log(st, "ARCH_EVAL drained"); }
-        if arch_empty && eval_empty && val_empty { self.log(st, "VALIDATION drained"); }
+        self.arch_seen |= !arch_empty;
+        self.eval_seen |= !eval_empty;
+        self.val_seen |= !val_empty;
+        if arch_empty && self.arch_seen && !self.arch { self.arch = true; self.log(st, "ARCH drained"); }
+        if arch_empty && eval_empty && self.eval_seen && !self.eval { self.eval = true; self.log(st, "ARCH_EVAL drained"); }
+        if arch_empty && eval_empty && val_empty && self.val_seen && !self.val { self.val = true; self.log(st, "VALIDATION drained"); }
     }
     fn log(&self, st: &SymbolTable, label: &str) {
         log_phase_memory(st, label);

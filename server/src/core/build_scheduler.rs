@@ -3,7 +3,7 @@ use std::{cell::RefCell, path::{Path, PathBuf}, rc::Rc, sync::atomic::Ordering};
 use lsp_types::MessageType;
 use tracing::{error, info, trace};
 
-use crate::{S, constants::{BuildStatus, BuildSteps, DEBUG_REBUILD_NOW, DEBUG_STEPS, DEBUG_THREADS, MAX_WATCHED_FILES_UPDATES_BEFORE_RESTART}, core::{csv_validation::CsvValidator, graph_recorder, entry_point::EntryPoint, import_resolver::ImportCache, js_validator::JsValidator, odoo::{InitState, Odoo, OdooNotification, SyncOdoo}, python_arch_builder::PythonArchBuilder, python_arch_eval::PythonArchEval, python_validator::PythonValidator, symbols::{SymbolTable, symbol_keys::{BuildableSymbolKey, SymbolKey}, symbol_table_impl::CreateError}, xml_validation::XmlValidator}, fifo_ptr_weak_hash_set::FifoWeakHashSet, progress_reporter::ProgressReporterRemaining, threads::SessionInfo, tree::Tree, utils::HashSet};
+use crate::{S, constants::{BuildStatus, BuildSteps, DEBUG_REBUILD_NOW, DEBUG_STEPS, DEBUG_THREADS, MAX_WATCHED_FILES_UPDATES_BEFORE_RESTART}, core::{csv_validation::CsvValidator, graph_recorder, entry_point::EntryPoint, import_resolver::ImportCache, js_validator::JsValidator, odoo::{InitState, Odoo, OdooNotification, SyncOdoo}, python_arch_builder::PythonArchBuilder, python_arch_eval::PythonArchEval, python_validator::PythonValidator, symbols::{SymbolTable, storage::metrics::PhaseMemoryLogger, symbol_keys::{BuildableSymbolKey, SymbolKey}, symbol_table_impl::CreateError}, xml_validation::XmlValidator}, fifo_ptr_weak_hash_set::FifoWeakHashSet, progress_reporter::ProgressReporterRemaining, threads::SessionInfo, tree::Tree, utils::HashSet};
 
 #[derive(Debug)]
 pub struct BuildScheduler {
@@ -222,12 +222,15 @@ impl BuildScheduler {
         let mut reporter = (!bs!(session).rebuild_arch.is_empty() || !bs!(session).rebuild_arch_eval.is_empty() || !bs!(session).rebuild_validation.is_empty())
             .then(|| ProgressReporterRemaining::start(session, "Odoo: Indexing"));
         trace!("Starting rebuild: {:?} - {:?} - {:?}", bs!(session).rebuild_arch.len(), bs!(session).rebuild_arch_eval.len(), bs!(session).rebuild_validation.len());
-        let mut phase_mem = crate::core::symbols::storage::metrics::PhaseMemoryLogger::default();
+        let queues_empty = bs!(session).rebuild_arch.is_empty() && bs!(session).rebuild_arch_eval.is_empty() && bs!(session).rebuild_validation.is_empty();
+        let mut phase_mem = PhaseMemoryLogger::for_rebuild(session.sync_odoo.state_init != InitState::ODOO_READY, queues_empty);
         while !session.sync_odoo.need_rebuild && (!bs!(session).rebuild_arch.is_empty() || !bs!(session).rebuild_arch_eval.is_empty() || !bs!(session).rebuild_validation.is_empty()) {
             if DEBUG_THREADS {
                 trace!("remains: {:?} - {:?} - {:?}", bs!(session).rebuild_arch.len(), bs!(session).rebuild_arch_eval.len(), bs!(session).rebuild_validation.len());
             }
-            phase_mem.check(session.st(), bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
+            if let Some(phase_mem) = phase_mem.as_mut() {
+                phase_mem.check(session.st(), bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
+            }
             let queue_size = bs!(session).rebuild_arch.len() * 3 + bs!(session).rebuild_arch_eval.len() * 2 + bs!(session).rebuild_validation.len();
             if let Some(reporter) = &mut reporter {
                 reporter.report_progress(queue_size);
@@ -301,7 +304,9 @@ impl BuildScheduler {
             info!("Odoo version change detected. OdooLS is restarting");
             session.send_notification(OdooNotification::RestartNeeded, ());
         }
-        phase_mem.check(session.st(), bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
+        if let Some(phase_mem) = phase_mem.as_mut() {
+            phase_mem.check(session.st(), bs!(session).rebuild_arch.is_empty(), bs!(session).rebuild_arch_eval.is_empty(), bs!(session).rebuild_validation.is_empty());
+        }
         session.sync_odoo.import_cache = None;
         session.sync_odoo.watched_file_updates = 0;
         if let Some(reporter) = &mut reporter {
