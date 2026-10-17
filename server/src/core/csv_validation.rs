@@ -42,8 +42,9 @@ impl CsvValidator {
             session.st_mut()[csv_symbol].set_build_status(BuildSteps::VALIDATION, BuildStatus::INVALID);
             return;
         }
-        let Some(data) = file_info.borrow().file_info_ast.borrow().text_document.as_ref().map(|td| td.contents().to_string()) else {
-            // File can be invalid (not valid UTF-8 and so text_document is empty)
+        let Some(data) = FileInfo::text_contents(&file_info, session) else {
+            // File can be invalid (not valid UTF-8 and so text_document is empty), or gone from disk
+            session.st_mut()[csv_symbol].set_build_status(BuildSteps::VALIDATION, BuildStatus::INVALID);
             return;
         };
         let model_name_pb = Path::new(&path);

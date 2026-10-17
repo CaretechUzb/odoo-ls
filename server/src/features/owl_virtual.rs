@@ -563,13 +563,8 @@ pub(crate) fn map_virtual_ref(
 /// component's doc imports its class from a per-file shim instead.
 pub(crate) fn build_virtual_docs(session: &mut SessionInfo, file_info: &Rc<RefCell<FileInfo>>) -> Vec<OwlVirtualDoc> {
     // 1. XML content.
-    let xml = {
-        let fi = file_info.borrow();
-        let fia = fi.file_info_ast.borrow();
-        match fia.text_document.as_ref() {
-            Some(td) => td.contents().to_string(),
-            None => return vec![],
-        }
+    let Some(xml) = FileInfo::text_contents(file_info, session) else {
+        return vec![];
     };
 
     // 2. Collect every directive expression, tagged with its enclosing template.
