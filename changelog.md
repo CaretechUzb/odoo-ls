@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Server
+
+- `file_cache` now defaults to `false`. The AST and text of a Python file that is not opened are dropped once the file is built, and parsed again from disk when it is validated or when a feature needs it (the 64 most recent of these stay in memory). Ranges in a dropped file are converted without re-parsing it. Set `file_cache = true` to keep every AST in memory, as before.
+- The background pre-parser parses at most 64 modules ahead of the build, and also parses the files ahead of their validation. On a ~2000-module project, this cuts the peak memory of the initial indexing by about 40%.
+- Python files outside of the workspace (but not external) now drop their AST after validation too when `file_cache` is off.
+
 ## [1.6.0] - 2026/09/22 - JavaScript and performance
 
 ### Server

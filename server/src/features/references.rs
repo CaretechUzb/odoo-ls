@@ -68,6 +68,10 @@ impl ReferenceFeature {
         }
         //We want to search for references of the definition, and not the current symbol. Let's use definition feature for that
         BuildScheduler::process_rebuilds(session, false);
+        // Before the borrow held by the match below
+        if !FileInfo::ensure_ast(file_info, session) {
+            return None;
+        }
         let def_sources = match file_info.borrow().file_info_ast.borrow().ast {
             Ast::PythonAst(_) => {
                 GotoUtils::get_symbols(session, GotoRequest::Definition, file_symbol, file_info, line, character)
@@ -374,6 +378,7 @@ impl ReferenceFeature {
     }
 
     fn references_in_file(session: &mut SessionInfo, file_symbol: SourceFileKey, file_info: &Rc<RefCell<FileInfo>>, reference_target: &ReferenceTarget) -> Vec<Location> {
+        FileInfo::ensure_ast(file_info, session);
         let file_info_ast = file_info.borrow().file_info_ast.clone();
         if file_info_ast.borrow().get_stmts().is_none() { //filter modules with only manifest or file outside of workspace
             return vec![];
@@ -483,6 +488,7 @@ impl ReferenceFeature {
         let manifest = Path::new(&session.st()[module].path).join("__manifest__.py").sanitize();
         let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&manifest).clone();
         if let Some(file_info) = file_info {
+            FileInfo::ensure_ast(&file_info, session);
             let file_info_ast = file_info.borrow().file_info_ast.clone();
             let file_info_ast = file_info_ast.borrow();
             if let Some(stmts) = file_info_ast.get_stmts() {
@@ -514,6 +520,7 @@ impl ReferenceFeature {
         let manifest = Path::new(&session.st()[module].path).join("__manifest__.py").sanitize();
         let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&manifest).clone();
         if let Some(file_info) = file_info {
+            FileInfo::ensure_ast(&file_info, session);
             let file_info_ast = file_info.borrow().file_info_ast.clone();
             let file_info_ast = file_info_ast.borrow();
             if let Some(stmts) = file_info_ast.get_stmts() {

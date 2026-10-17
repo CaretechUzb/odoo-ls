@@ -393,13 +393,13 @@ fn single_odools_toml_scalars() {
         [[config]]
         name = "default"
         python_path = 'python'
-        file_cache = false
+        file_cache = true
         auto_refresh_delay = 1234
     "#);
 
     let cfg = c.default();
     assert_eq!(cfg.python_path(), "python");
-    assert!(!cfg.file_cache());
+    assert!(cfg.file_cache());
     assert_eq!(cfg.auto_refresh_delay(), 1234);
 
     // Render view serializes the same values.
@@ -523,11 +523,11 @@ fn name_defaults_to_default_when_omitted() {
     let mut c = Cfg::new();
     let ws = c.ws("ws");
     write_odools(&ws, r#"[[config]]
-file_cache = false
+file_cache = true
 "#);
 
     let cfg = c.default();
-    assert!(!cfg.file_cache());
+    assert!(cfg.file_cache());
 }
 
 #[test]
@@ -540,20 +540,20 @@ fn deeper_odools_toml_shadows_shallower() {
         [[config]]
         name = "default"
         python_path = "python3"
-        file_cache = true
+        file_cache = false
         auto_refresh_delay = 1111
     "#);
     write_odools(&ws, r#"
         [[config]]
         name = "default"
         python_path = "python"
-        file_cache = false
+        file_cache = true
     "#);
 
     let cfg = c.default();
     // Deeper file wins for set keys; an unset key falls back to the parent.
     assert_eq!(cfg.python_path(), "python");
-    assert!(!cfg.file_cache());
+    assert!(cfg.file_cache());
     assert_eq!(cfg.auto_refresh_delay(), 1111);
 
     let html = c.view().to_html_string();
@@ -2429,7 +2429,7 @@ name = "default"
     let config = cfg.default();
 
     // Wiki "Configuration reference" table defaults.
-    assert!(config.file_cache());
+    assert!(!config.file_cache());
     assert_eq!(config.diag_missing_imports(),
         odoo_ls_server::core::config::DiagMissingImportsMode::All);
     assert!(config.ac_filter_model_names());

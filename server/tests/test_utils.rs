@@ -226,6 +226,7 @@ pub fn get_resolved_symbols_at_position(
     character: u32,
 ) -> Vec<SymbolKey> {
     // Get evaluations at the given position
+    FileInfo::ensure_ast(file_info, session);
     let offset = file_info
         .borrow()
         .position_to_offset(line, character, session.sync_odoo.encoding);

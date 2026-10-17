@@ -138,6 +138,8 @@ impl PythonArchEval {
         } else {
             if self.file_mode {
                 BuildScheduler::queue(session, self.sym_stack[0].unwrap_buildable_key());
+                // Validation parses the file again: do not hold its AST until then.
+                FileMgr::drop_ast(session, &file_info_rc);
             }
         }
     }

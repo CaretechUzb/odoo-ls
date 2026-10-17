@@ -52,6 +52,7 @@ pub fn log_phase_memory(st: &SymbolTable, label: &str) {
     log_memory_usage(label);
     info!("[mem] {} symbol counts: roots={} namespaces={} packages={} modules={} files={} classes={} functions={} variables={} xml={} csv={}", label,
         st.roots.len(), st.namespaces.len(), st.python_packages.len(), st.modules.len(), st.files.len(), st.classes.len(), st.functions.len(), st.variables.len(), st.xml_files.len(), st.csv_files.len());
+    info!("[mem] {} dropped ASTs parsed again: {}", label, crate::core::file_mgr::AST_REPARSES.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 pub fn log_is_in_workspace(symbol_table: &SymbolTable) {
