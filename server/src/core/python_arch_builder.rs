@@ -232,9 +232,10 @@ impl PythonArchBuilder {
                         and so create a borrow error here
                         */
                         let mut import_variables_to_create = vec![];
-                        for (name, loc_syms) in session.st().iter_symbols(import_symbol) {
+                        for entry in session.st().iter_symbols(import_symbol) {
+                            let name = entry.name();
                             if all_name_allowed || name_filter.contains(name) {
-                                let evaluations = Evaluation::from_sections(session.st(), import_symbol, loc_syms);
+                                let evaluations = Evaluation::from_sections(session.st(), import_symbol, entry);
                                 import_variables_to_create.push((name.clone(), evaluations));
                             }
                         }

@@ -1,3 +1,4 @@
+use super::scope_map::ScopeMap;
 use super::symbol_mgr::SectionRange;
 use crate::core::file_mgr::NoqaInfo;
 use crate::core::model::Model;
@@ -47,7 +48,7 @@ pub struct ModuleSymbol {
 
     // parent / child symbols
     parent: NamespaceKey,
-    pub(super) symbols: HashMap<OYarn, HashMap<u32, Vec<SymbolKey>>>,
+    pub(super) symbols: ScopeMap,
     pub(super) fs_symbols: HashMap<OYarn, SymbolKey>,
     pub(super) data_file_symbols: HashMap<String, SourceFileKey>,
     pub(super) js_symbols: HashMap<String, JsFileKey>,
@@ -86,7 +87,7 @@ impl ModuleSymbol {
             current_build_step: BuildSteps::ARCH,
             build_status: BuildStatus::PENDING,
             sections: vec![],
-            symbols: HashMap::default(),
+            symbols: ScopeMap::default(),
             model_dependencies: PtrWeakHashSet::new(),
             dependencies: DependenciesTable::default(),
             dependents: DependentsTable::default(),

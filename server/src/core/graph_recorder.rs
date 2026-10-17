@@ -374,7 +374,7 @@ fn name_resolves_beyond_locals(st: &SymbolTable, function: SymbolKey, name: &str
         match current {
             SymbolKey::Function(f) => {
                 let non_variable = st[f].symbols().get(name)
-                    .is_some_and(|sections| sections.values().flatten().any(|s| !matches!(s, SymbolKey::Variable(_))));
+                    .is_some_and(|entry| entry.keys().any(|s| !matches!(s, SymbolKey::Variable(_))));
                 if non_variable || !st.get_ext_symbol(current, name).is_empty() {
                     return true;
                 }
@@ -806,7 +806,7 @@ fn children_named(st: &SymbolTable, container: SymbolKey, name: &str) -> Vec<Sym
         SymbolKey::Function(f) => st[f].symbols().get(name),
         _ => None,
     };
-    map.map(|m| m.values().flatten().copied().collect()).unwrap_or_default()
+    map.map(|entry| entry.keys().copied().collect()).unwrap_or_default()
 }
 
 /// Indexed symbols of `file` whose qualname is `qualname`, in source order. Their position in

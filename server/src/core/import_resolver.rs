@@ -630,17 +630,12 @@ fn valid_name_from_disk(path: &str, start_filter: &str) -> HashMap<OYarn, SymTyp
 
 fn valid_name_from_symbol(symbol_table: &SymbolTable, symbol: SymbolKey, start_filter: &str) -> HashMap<OYarn, SymType> {
     let mut res = HashMap::default();
-    for s in symbol_table.iter_symbols(symbol) {
-        if s.0.starts_with(start_filter) {
-            let mut typ = SymType::VARIABLE;
-            let a_section = s.1.iter().last(); //let's take the last section, anyway we can display only one icon
-            if let Some(a_section) = a_section {
-                let last = a_section.1.last();
-                if let Some(&last) = last {
-                    typ = last.typ();
-                }
-            }
-            res.insert(s.0.clone(), typ);
+    for entry in symbol_table.iter_symbols(symbol) {
+        if entry.name().starts_with(start_filter) {
+            // Only one icon can be displayed: take the last declaration of the highest section,
+            // the section opened last in the source.
+            let typ = entry.keys().next_back().map_or(SymType::VARIABLE, |last| last.typ());
+            res.insert(entry.name().clone(), typ);
         }
     }
     res
