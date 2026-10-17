@@ -139,7 +139,7 @@ impl CsvArchBuilder {
             match session.st_mut().add_new_xml_field(record_key.into(),
                 field_name,
                 TextRange::new(TextSize::new(start as u32), TextSize::new(end as u32)),
-                Some(field.to_string()),
+                Some(oyarn!("{}", field)),
                 Some(TextRange::new(TextSize::new(start as u32), TextSize::new(end as u32))),
                 None
             ) {

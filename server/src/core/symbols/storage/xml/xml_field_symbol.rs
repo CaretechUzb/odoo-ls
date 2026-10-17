@@ -8,9 +8,9 @@ use std::fmt::Display;
 pub struct XmlFieldSymbol {
     pub field_name: OYarn,
     pub range: TextRange,
-    pub text: Option<String>,
+    pub text: Option<OYarn>,
     pub text_range: Option<TextRange>,
-    pub ref_key: Option<(String, TextRange)>,
+    pub ref_key: Option<(OYarn, TextRange)>,
     pub is_external: bool,
 
     parent: XmlFieldParent,
@@ -20,9 +20,9 @@ impl XmlFieldSymbol {
     pub fn new(
         field_name: &str,
         range: TextRange,
-        text: Option<String>,
+        text: Option<OYarn>,
         text_range: Option<TextRange>,
-        ref_key: Option<(String, TextRange)>,
+        ref_key: Option<(OYarn, TextRange)>,
         parent: XmlFieldParent,
         is_external: bool,
     ) -> Self {

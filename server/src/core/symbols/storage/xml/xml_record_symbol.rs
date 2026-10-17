@@ -1,9 +1,9 @@
 use std::ops::Range;
-use crate::{core::symbols::{SymbolTable, storage::{XmlDataParent, xml::xml_field_symbol::XmlFieldName}, symbol_keys::XmlRecordKey}, utils::HashMap};
+use crate::core::symbols::{SymbolTable, storage::{XmlDataParent, xml::{xml_field_map::XmlFieldMap, xml_field_symbol::XmlFieldName}}, symbol_keys::XmlRecordKey};
 
 use ruff_text_size::TextRange;
 
-use crate::{constants::OYarn, core::symbols::symbol_keys::XmlFieldKey};
+use crate::constants::OYarn;
 
 #[derive(Debug)]
 pub struct XmlRecordSymbol {
@@ -13,7 +13,7 @@ pub struct XmlRecordSymbol {
     pub range: TextRange,
 
     parent: XmlDataParent,
-    pub(in crate::core::symbols::storage) fields: HashMap<OYarn, XmlFieldKey>,
+    pub(in crate::core::symbols::storage) fields: XmlFieldMap,
 }
 
 impl XmlRecordSymbol {
@@ -27,7 +27,7 @@ impl XmlRecordSymbol {
         Self {
             model,
             xml_id,
-            fields: HashMap::default(),
+            fields: XmlFieldMap::default(),
             range,
             parent,
             is_external,
@@ -38,7 +38,7 @@ impl XmlRecordSymbol {
         self.parent
     }
 
-    pub fn fields(&self) -> &HashMap<OYarn, XmlFieldKey> {
+    pub fn fields(&self) -> &XmlFieldMap {
         &self.fields
     }
 
@@ -46,7 +46,7 @@ impl XmlRecordSymbol {
     pub fn get_field_text(&self, field_name: XmlFieldName, symbol_table: &SymbolTable) -> Option<String> {
         let &field_key = self.fields().get(field_name.as_str())?;
         let field_symbol = &symbol_table[field_key];
-        field_symbol.text.clone()
+        field_symbol.text.as_ref().map(|text| text.to_string())
     }
 }
 

@@ -5,10 +5,10 @@ use crate::{
         symbol_keys::{
             ClassKey, CompiledKey, CsvFileKey, DiskDirKey, FileKey, FunctionKey, JsFileKey,
             ModuleKey, NamespaceKey, PythonPackageKey, RootKey, SymbolKey,
-            XmlAssetKey, XmlDataKey, XmlFieldKey, XmlFileKey, XmlRecordKey,
+            XmlAssetKey, XmlDataKey, XmlFileKey, XmlRecordKey,
         },
         SymbolMgr,
-        storage::scope_map::ScopeMap,
+        storage::{scope_map::ScopeMap, xml::xml_field_map::XmlFieldMap},
     },
     oyarn,
     utils::{HashMap, HashSet},
@@ -193,14 +193,14 @@ pub enum XmlFieldParent {
 }
 
 impl XmlFieldParent {
-    pub fn fields(self, st: &SymbolTable) -> &HashMap<OYarn, XmlFieldKey> {
+    pub fn fields(self, st: &SymbolTable) -> &XmlFieldMap {
         match self {
             Self::XmlRecord(x) => &st[x].fields,
             Self::XmlAsset(x) => &st[x].fields,
         }
     }
     
-    pub fn fields_mut(self, st: &mut SymbolTable) -> &mut HashMap<OYarn, XmlFieldKey> {
+    pub fn fields_mut(self, st: &mut SymbolTable) -> &mut XmlFieldMap {
         match self {
             Self::XmlRecord(x) => &mut st[x].fields,
             Self::XmlAsset(x) => &mut st[x].fields,

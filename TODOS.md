@@ -16,20 +16,6 @@
 
 **Depends on / blocked by:** None.
 
-### Compact XML symbols
-
-**What:** Shrink the XML record and field symbols: a flat sorted `Vec` for `XmlRecordSymbol.fields`, and `OYarn` instead of `String` for `XmlFieldSymbol.text` and `ref_key`.
-
-**Why:** Measured on his, 2026-10-17: the `XmlRecordSymbol.fields` maps take 22.9 MiB, and a flat sorted `Vec` would cut about 12 MiB (estimated). `XmlFieldSymbol` is 112 B per slot over 524k slots, about 58 MiB (estimated). Field `text` and `ref_key` as `OYarn` would save about 8-12 MiB (estimated); field text totals 11.0 MiB measured over 436k texts.
-
-**Pros:** About 30-80 MiB more off the memory after validation, without moving the symbol graph out of RAM.
-
-**Cons:** Touches XML symbol lookup and every reader of the field text. Storing field text as source ranges was rejected: it saves at most about 11 MiB, while readers (`evaluation_utils.rs`, `completion.rs`, `xml_validation.rs` and others) read ir.model.fields records of OTHER files at request time. That would mean disk reads, XML entity/CDATA decoding and CSV quote decoding, and CSV offsets are not exact.
-
-**Context:** Start from the `[mem]` lines and `metrics.rs` `log_symbol_counts`. Same regression contract as the other memory items (goldens, CLI `--parse` output digest, both `file_cache` modes).
-
-**Depends on / blocked by:** None.
-
 ### Scope map: long names are stored per row
 
 **What:** Store a long name once per name instead of once per declaration in `ScopeMap`.

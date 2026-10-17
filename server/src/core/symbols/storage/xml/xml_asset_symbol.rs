@@ -1,8 +1,8 @@
-use crate::{core::symbols::storage::XmlDataParent, utils::HashMap};
+use crate::core::symbols::storage::{XmlDataParent, xml::xml_field_map::XmlFieldMap};
 
 use ruff_text_size::TextRange;
 
-use crate::{constants::OYarn, core::symbols::symbol_keys::XmlFieldKey};
+use crate::constants::OYarn;
 
 #[derive(Debug)]
 pub struct XmlAssetSymbol {
@@ -11,12 +11,12 @@ pub struct XmlAssetSymbol {
     pub range: TextRange,
 
     parent: XmlDataParent,
-    pub(in crate::core::symbols::storage) fields: HashMap<OYarn, XmlFieldKey>,
+    pub(in crate::core::symbols::storage) fields: XmlFieldMap,
 }
 
 impl XmlAssetSymbol {
     pub fn new(xml_id: Option<OYarn>, range: TextRange, parent: XmlDataParent, is_external: bool) -> Self {
-        Self { xml_id, range, parent, is_external, fields: HashMap::default() }
+        Self { xml_id, range, parent, is_external, fields: XmlFieldMap::default() }
     }
 
     pub fn parent(&self) -> XmlDataParent {
