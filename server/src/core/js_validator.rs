@@ -76,6 +76,8 @@ impl JsValidator {
         file_info.replace_diagnostics(DiagnosticSource::JS_VALIDATION, diagnostics);
         file_info.set_diagnostics_evictable();
         file_info.publish_diagnostics(session);
+        // The JsAst is all the validation needs: features read the text again from disk.
+        file_info.drop_text_if_allowed(session);
         session.st_mut().set_build_status(self.js_symbol.into(), BuildSteps::VALIDATION, BuildStatus::DONE);
     }
 

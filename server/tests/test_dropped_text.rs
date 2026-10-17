@@ -168,3 +168,40 @@ fn test_opened_or_cached_text_is_kept() {
         assert!(has_text(&file_info), "file_cache keeps the text of {path}");
     }
 }
+
+/// XML, CSV and JS files of the test addons, and whether each still has its text.
+fn data_and_js_texts(session: &SessionInfo) -> Vec<(String, bool)> {
+    let file_mgr = session.sync_odoo.get_file_mgr();
+    let file_mgr = file_mgr.borrow();
+    let mut files: Vec<(String, bool)> = file_mgr.files.values()
+        .filter(|f| [".xml", ".csv", ".js"].iter().any(|ext| f.borrow().uri.ends_with(ext)))
+        .map(|f| {
+            let f = f.borrow();
+            let file_info_ast = f.file_info_ast.borrow();
+            assert!(file_info_ast.can_convert_ranges(), "{}: no text and no line table", f.uri);
+            (f.uri.clone(), file_info_ast.has_text())
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// After the build, no XML, CSV or JS file keeps its text with `file_cache` off; all of them
+/// keep it with `file_cache` on.
+#[test]
+fn test_build_drops_the_texts_of_data_and_js_files() {
+    for file_cache in [false, true] {
+        let (mut odoo, mut config) = setup::setup::setup_server(true);
+        config.set_bool(ConfigKey::FileCache, file_cache);
+        let session = setup::setup::create_init_session(&mut odoo, config);
+        let files = data_and_js_texts(&session);
+        assert!(files.iter().filter(|(uri, _)| uri.ends_with(".xml")).count() > 5, "expected the XML files of the test addons");
+        assert!(files.iter().any(|(uri, _)| uri.ends_with(".csv")));
+        assert!(files.iter().any(|(uri, _)| uri.ends_with(".js")));
+        let with_text: Vec<&String> = files.iter().filter(|(_, has_text)| *has_text).map(|(uri, _)| uri).collect();
+        match file_cache {
+            false => assert!(with_text.is_empty(), "texts kept after the build: {with_text:?}"),
+            true => assert_eq!(with_text.len(), files.len(), "file_cache must keep every text"),
+        }
+    }
+}

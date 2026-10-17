@@ -916,6 +916,11 @@ impl FileInfo {
         file_info.borrow_mut().reread_text(session)
     }
 
+    /// [`Self::ensure_text`] for callers holding the file mutably.
+    pub fn reacquire_text(&mut self, session: &mut SessionInfo) -> bool {
+        self.file_info_ast.borrow().has_text() || self.reread_text(session)
+    }
+
     /// The text of `file_info`, read again from disk if it was dropped (see [`Self::ensure_text`]).
     pub fn text_contents(file_info: &Rc<RefCell<FileInfo>>, session: &mut SessionInfo) -> Option<String> {
         if !Self::ensure_text(file_info, session) {
@@ -1613,10 +1618,11 @@ impl FileMgr {
             let ep_mgr = session.sync_odoo.entry_point_mgr.borrow();
             let is_part_of_ep = ep_mgr.iter_all_but_public().any(|entry| uri.starts_with(&entry.borrow().path));
             drop(ep_mgr);
-            let was_built = file_info_mut.file_info_ast.borrow().is_built();
+            let was_ready = file_info_mut.file_info_ast.borrow().is_built() && file_info_mut.file_info_ast.borrow().has_text();
             updated = file_info_mut.update(session, uri, content, version, !is_part_of_ep, force, is_untitled);
-            // Unchanged content gave a dropped AST back (see `FileInfo::update`): bound it like a re-parse.
-            if !updated && !was_built && !file_info_mut.opened && !session.sync_odoo.config.file_cache()
+            // Unchanged content gave a dropped AST or text back (see `FileInfo::update`): bound it
+            // like a re-parse.
+            if !updated && !was_ready && !file_info_mut.opened && !session.sync_odoo.config.file_cache()
                 && file_info_mut.file_info_ast.borrow().is_built() {
                     drop(file_info_mut);
                     self.keep_reparsed_ast(uri);

@@ -31,6 +31,16 @@ impl CsvValidator {
         if !session.st().ready_for_step(csv_symbol.into(), BuildSteps::VALIDATION){
             return;
         }
+        self.validate_file(session, csv_symbol);
+        // Validated: the text is not needed anymore, features read it again from disk.
+        let path = session.st()[csv_symbol].path.clone();
+        let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path);
+        if let Some(file_info) = file_info {
+            FileMgr::drop_text(session, &file_info);
+        }
+    }
+
+    fn validate_file(&mut self, session: &mut SessionInfo, csv_symbol: CsvFileKey) {
         let mut diagnostics = vec![];
         session.st_mut()[csv_symbol].set_build_status(BuildSteps::VALIDATION, BuildStatus::IN_PROGRESS);
         let path = session.st()[csv_symbol].path.clone();
