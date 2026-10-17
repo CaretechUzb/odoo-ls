@@ -2,30 +2,58 @@
 
 ## Memory
 
-### Shrink scope maps and XML/CSV field text
+### References read dependent XML/CSV files from disk
 
-**What:** Replace the per-scope `HashMap<OYarn, HashMap<u32, Vec<SymbolKey>>>` with a flat sorted `Vec` (name, offset, symbol), and store XML/CSV field text as source ranges instead of `String`.
+**What:** Avoid reading, hashing and LRU-caching every dependent XML/CSV/JS file on each references request.
 
-**Why:** After the graph/RAM work these are the next likely RAM consumers: scope maps are estimated at ~100+ MB across ~450k names (200-250 B per name), and a profile showed `FileContentParent::add_child` at ~237 MB. Field text is read during validation (`xml_validation.rs`), so it stayed in RAM in M2 (D11); its size is not measured yet.
+**Why:** With texts dropped, `features/references.rs` (~166/175/242/250) and `js_references.rs` (~159) read every dependent file from disk through `build_virtual_docs`/`read_real_js`, hash it and put it in the LRU. Past the 64-entry LRU (`REPARSED_AST_CAPACITY`), a big field-references request re-reads all of them every time. Correctness is fine; this is a latency item.
 
-**Pros:** A further RAM cut without moving the hot symbol graph out of memory (D6 keeps `SymbolTable` in RAM).
+**Pros:** Faster field and JS references on large projects, with no change to the results.
 
-**Cons:** Touches symbol lookup on the hot path (scope maps) and XML/CSV validation (field text); needs the same regression contract as the graph PR (goldens, CLI `--parse` output digest, both `file_cache` modes).
+**Cons:** A per-request text cache adds state to the request path; scanning without registering in the LRU needs a second read path.
 
-**Context:** Estimates from the 2026-10-16 eng review memory map. Start from the `[mem]` per-phase lines and `metrics.rs` `log_symbol_counts`, and measure before choosing the layout.
+**Context:** Options are a per-request text cache, or scanning without registering the files in the LRU. Measure a field-references request on the his tree before and after.
 
-**Depends on / blocked by:** M0 per-phase memory logs (in place).
+**Depends on / blocked by:** None.
 
-### Drop XML/JS `text_document` after the build
+### Compact XML symbols
 
-**What:** Drop the `text_document` of XML and JS files once their build steps are done, as M1 does for Python ASTs, and read the text again on demand.
+**What:** Shrink the XML record and field symbols: a flat sorted `Vec` for `XmlRecordSymbol.fields`, and `OYarn` instead of `String` for `XmlFieldSymbol.text` and `ref_key`.
 
-**Why:** ~109 MB measured on the his tree: XML and JS sources stay in RAM for the whole session.
+**Why:** Measured on his, 2026-10-17: the `XmlRecordSymbol.fields` maps take 22.9 MiB, and a flat sorted `Vec` would cut about 12 MiB (estimated). `XmlFieldSymbol` is 112 B per slot over 524k slots, about 58 MiB (estimated). Field `text` and `ref_key` as `OYarn` would save about 8-12 MiB (estimated); field text totals 11.0 MiB measured over 436k texts.
 
-**Pros:** The largest measured RAM item left in `FileInfo`.
+**Pros:** About 30-80 MiB more off the memory after validation, without moving the symbol graph out of RAM.
 
-**Cons:** Blocked by `Ast::is_built()` always returning true for XML/CSV/JS (callers cannot tell that the text is gone) and by ~15 direct readers of `text_document` for these files; each needs a re-acquire path like `FileInfo::ensure_ast`.
+**Cons:** Touches XML symbol lookup and every reader of the field text. Storing field text as source ranges was rejected: it saves at most about 11 MiB, while readers (`evaluation_utils.rs`, `completion.rs`, `xml_validation.rs` and others) read ir.model.fields records of OTHER files at request time. That would mean disk reads, XML entity/CDATA decoding and CSV quote decoding, and CSV offsets are not exact.
 
-**Context:** M1 dropped Python ASTs and kept XML/JS text (measured with the M0 `[mem]` lines). Survey the direct `text_document` readers first.
+**Context:** Start from the `[mem]` lines and `metrics.rs` `log_symbol_counts`. Same regression contract as the other memory items (goldens, CLI `--parse` output digest, both `file_cache` modes).
 
-**Depends on / blocked by:** M0 per-phase memory logs (in place).
+**Depends on / blocked by:** None.
+
+### Scope map: long names are stored per row
+
+**What:** Store a long name once per name instead of once per declaration in `ScopeMap`.
+
+**Why:** `byteyarn` `Yarn::clone` deep-copies heap yarns longer than 15 bytes, so `ScopeMap::insert` (`server/src/core/symbols/storage/scope_map.rs`) stores a long name once per declaration, not once per name. The comment "reuse their yarn" there is misleading.
+
+**Pros:** Less memory for scopes with many redeclared long names.
+
+**Cons:** Needs a shared or interned name type, which touches every user of `OYarn`.
+
+**Context:** Measure first, since the gain is unknown. Also consider `Yarn::copy(name)` instead of `oyarn!("{}", name)`.
+
+**Depends on / blocked by:** None.
+
+### `CsvValidator` early return
+
+**What:** Make the `CsvValidator` early return set the file's validation status.
+
+**Why:** When the model has no main symbol, the early return still leaves the file's validation status IN_PROGRESS. This predates the text-drop work.
+
+**Pros:** The file no longer looks as if it were still in validation.
+
+**Cons:** None known.
+
+**Context:** Found while dropping the XML/CSV/JS texts.
+
+**Depends on / blocked by:** None.
