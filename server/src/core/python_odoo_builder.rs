@@ -315,6 +315,7 @@ impl PythonOdooBuilder {
         if let Some(&id_field) = id_field.last() {
             let evaluation = Evaluation::eval_from_symbol(session.st(), id_field, Some(true));
             session.st_mut()[id].evaluations.push(evaluation);
+            session.st_mut()[id].evaluations.shrink_to_fit();
         }
         //display_name
         let display_name = session.st_mut().add_new_variable(symbol, "display_name", range);
@@ -322,6 +323,7 @@ impl PythonOdooBuilder {
         if let Some(&char_field) = char_field.last() {
             let evaluation = Evaluation::eval_from_symbol(session.st(), char_field, Some(true));
             session.st_mut()[display_name].evaluations.push(evaluation);
+            session.st_mut()[display_name].evaluations.shrink_to_fit();
         }
         //if log_access
         if session.st()[symbol]._model.as_ref().unwrap().log_access {
@@ -331,6 +333,7 @@ impl PythonOdooBuilder {
             if let Some(&many2one_field) = many2one_field.last() {
                 let evaluation = Evaluation::eval_from_symbol(session.st(), many2one_field, Some(true));
                 session.st_mut()[create_uid].evaluations.push(evaluation);
+                session.st_mut()[create_uid].evaluations.shrink_to_fit();
             }
             //create_date
             let create_date = session.st_mut().add_new_variable(symbol, "create_date", range);
@@ -338,6 +341,7 @@ impl PythonOdooBuilder {
             if let Some(&datetime_field) = datetime_field.last() {
                 let evaluation = Evaluation::eval_from_symbol(session.st(), datetime_field, Some(true));
                 session.st_mut()[create_date].evaluations.push(evaluation);
+                session.st_mut()[create_date].evaluations.shrink_to_fit();
             }
             //write_uid
             let write_uid = session.st_mut().add_new_variable(symbol, "write_uid", range);
@@ -345,6 +349,7 @@ impl PythonOdooBuilder {
             if let Some(&many2one_field) = many2one_field.last() {
                 let evaluation = Evaluation::eval_from_symbol(session.st(), many2one_field, Some(true));
                 session.st_mut()[write_uid].evaluations.push(evaluation);
+                session.st_mut()[write_uid].evaluations.shrink_to_fit();
             }
             //write_date
             let write_date = session.st_mut().add_new_variable(symbol, "write_date", range);
@@ -352,6 +357,7 @@ impl PythonOdooBuilder {
             if let Some(&datetime_field) = datetime_field.last() {
                 let evaluation = Evaluation::eval_from_symbol(session.st(), datetime_field, Some(true));
                 session.st_mut()[write_date].evaluations.push(evaluation);
+                session.st_mut()[write_date].evaluations.shrink_to_fit();
             }
         }
     }
