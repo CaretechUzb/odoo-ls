@@ -75,7 +75,12 @@ fn main() {
         .filename_suffix(format!("{}.log", std::process::id()))
         .build(log_dir)
         .expect("failed to initialize rolling file appender");
-    let (file_writer, _guard) = tracing_appender::non_blocking(file_appender);
+    // The channel to the log writer thread is allocated whole: 128k lines by default, 4 MiB.
+    // Fewer lines, and the logging thread waits when they are all taken instead of losing logs.
+    let (file_writer, _guard) = tracing_appender::non_blocking::NonBlockingBuilder::default()
+        .buffered_lines_limit(16_384)
+        .lossy(false)
+        .finish(file_appender);
     let subscriber = FmtSubscriber::builder()
         .with_thread_ids(true)
         .with_file(false)
