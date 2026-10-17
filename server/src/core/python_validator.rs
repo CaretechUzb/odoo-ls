@@ -73,7 +73,7 @@ impl PythonValidator {
                 }
                 session.st_mut().set_build_status(symbol.unwrap_buildable_key(), BuildSteps::VALIDATION, BuildStatus::IN_PROGRESS);
                 file_info_rc.borrow_mut().replace_diagnostics(DiagnosticSource::PY_VALIDATION, vec![]);
-                if !file_info_rc.borrow().file_info_ast.borrow().ast.is_built() {
+                if !file_info_rc.borrow().file_info_ast.borrow().is_built() {
                     file_info_rc.borrow_mut().prepare_ast(session);
                 }
                 let file_info = file_info_rc.borrow();
@@ -111,7 +111,7 @@ impl PythonValidator {
                 }
                 // Re-acquire a dropped AST first: the text it is parsed from is the one to compare
                 // with the text the symbols (and their node indexes) were built from.
-                if !file_info_rc.borrow().file_info_ast.borrow().ast.is_built() {
+                if !file_info_rc.borrow().file_info_ast.borrow().is_built() {
                     file_info_rc.borrow_mut().prepare_ast(session);
                 }
                 if file_info_rc.borrow().file_info_ast.borrow().text_hash != session.st().get_processed_text_hash(parent_file) {
@@ -172,11 +172,11 @@ impl PythonValidator {
                 let manifest_path = Path::new(&session.st()[m].path).join("__manifest__.py");
                 let manifest_file = session.sync_odoo.get_file_mgr().borrow().get_file_info(&manifest_path.sanitize_cow());
                 if let Some(manifest_file) = manifest_file {
-                    FileMgr::drop_ast(session, &manifest_file);
+                    FileMgr::drop_text(session, &manifest_file);
                 }
             }
             if let Some(file) = self.file_info.as_ref() {
-                FileMgr::drop_ast(session, file);
+                FileMgr::drop_text(session, file);
             }
         }
     }

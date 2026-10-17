@@ -194,8 +194,9 @@ pub struct SyncOdoo {
     pub build_scheduler: BuildScheduler,
     pub state_init: InitState,
     pub must_reload_paths: Vec<(Wk<FileSystemSymbolParent>, String)>, // formerly Weak refs
-    /// Python files whose dropped AST was parsed again from a disk content that is not the one
-    /// their symbols were built from: reloaded by the next rebuild, see `FileInfo::prepare_ast`.
+    /// Files whose dropped AST or text was read again from a disk content that is not the one
+    /// their symbols were built from: reloaded by the next rebuild, see
+    /// `FileInfo::reload_changed_on_disk`.
     pub files_changed_on_disk: Vec<String>,
     pub load_odoo_addons: bool, //indicate if we want to load odoo addons or not
     pub need_rebuild: bool, //if true, the next process_rebuilds will drop everything and rebuild everything
@@ -756,7 +757,7 @@ impl SyncOdoo {
         session.sync_odoo.pre_parse_cache = None;
         drop(pre_parser);
 
-        log_phase_memory(session.st(), "module ARCH+ARCH_EVAL built");
+        log_phase_memory(session.sync_odoo, "module ARCH+ARCH_EVAL built");
         // Run deferred subfunction invalidations
         if let Some(mut files) = session.sync_odoo.deferred_subfunc_invalidation.take() {
             while let Some(file) = files.pop_front_valid(session.st()) {
@@ -782,7 +783,7 @@ impl SyncOdoo {
         }
         session.sync_odoo.pre_parse_cache = None;
         drop(pre_parser);
-        log_phase_memory(session.st(), "module VALIDATION drained");
+        log_phase_memory(session.sync_odoo, "module VALIDATION drained");
         session.sync_odoo.import_cache = None;
         let modules_count = session.sync_odoo.modules.len();
         reporter.end();
@@ -1594,7 +1595,7 @@ impl Odoo {
             }
             let file_info = session.sync_odoo.get_file_mgr().borrow_mut().get_file_info(&path);
             if let Some(file_info) = file_info {
-                if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+                if !file_info.borrow().file_info_ast.borrow().is_built() {
                     file_info.borrow_mut().prepare_ast(session);
                 }
                 let ast_kind = file_info.borrow().file_info_ast.borrow().ast.kind();
@@ -1652,7 +1653,7 @@ impl Odoo {
         if let Some(file_symbol) = SyncOdoo::get_symbol_of_opened_file(session, &file_path_buf) {
             let file_info = session.sync_odoo.get_file_mgr().borrow_mut().get_file_info(&path);
             if let Some(file_info) = file_info {
-                if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+                if !file_info.borrow().file_info_ast.borrow().is_built() {
                     file_info.borrow_mut().prepare_ast(session);
                 }
                 let ast_kind = file_info.borrow().file_info_ast.borrow().ast.kind();
@@ -1737,10 +1738,10 @@ impl Odoo {
             }
             let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path);
             if let Some(file_info) = file_info {
-                if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+                if !file_info.borrow().file_info_ast.borrow().is_built() {
                     file_info.borrow_mut().prepare_ast(session);
                 }
-                if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+                if !file_info.borrow().file_info_ast.borrow().is_built() {
                     return Ok(None);
                 }
                 return match is_declaration {
@@ -1780,7 +1781,7 @@ impl Odoo {
             }
             let file_info = session.sync_odoo.get_file_mgr().borrow_mut().get_file_info(&path);
             if let Some(file_info) = file_info {
-                if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+                if !file_info.borrow().file_info_ast.borrow().is_built() {
                     file_info.borrow_mut().prepare_ast(session);
                 }
                 return Ok(ReferenceFeature::get_references(session, file_symbol, &file_info, params.text_document_position.position.line, params.text_document_position.position.character));
@@ -1801,7 +1802,7 @@ impl Odoo {
         let path = FileMgr::uri2pathname(uri.as_str());
         let file_symbol = SyncOdoo::get_symbol_of_opened_file(session, Path::new(&path))?;
         let file_info = session.sync_odoo.get_file_mgr().borrow_mut().get_file_info(&path)?;
-        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+        if !file_info.borrow().file_info_ast.borrow().is_built() {
             file_info.borrow_mut().prepare_ast(session);
         }
         Some((file_symbol, file_info))
@@ -1872,7 +1873,7 @@ impl Odoo {
             }
             let file_info = session.sync_odoo.get_file_mgr().borrow_mut().get_file_info(&path);
             if let Some(file_info) = file_info {
-                if schema != "untitled" && !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+                if schema != "untitled" && !file_info.borrow().file_info_ast.borrow().is_built() {
                     file_info.borrow_mut().prepare_ast(session);
                 }
                 let trigger_kind = params.context.as_ref()
@@ -2021,6 +2022,9 @@ impl Odoo {
             let file_extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
             let (valid, updated) = Odoo::update_file_cache(session, &path.sanitize_cow(), file_extension, None, -100);
             if valid && updated {
+                // Reloaded here: a reload queued by a read of its changed content is not needed.
+                let path_str = path.sanitize_cow();
+                session.sync_odoo.files_changed_on_disk.retain(|p| p.as_str() != path_str.as_ref());
                 Odoo::update_file_index(session, &path, file_extension, false, true);
             }
         }
@@ -2161,7 +2165,7 @@ impl Odoo {
             file_info.version = None;
         }
         if !session.sync_odoo.config.file_cache() {
-            // No longer opened: its AST may now be dropped, like the ASTs parsed again on demand.
+            // No longer opened: its text and AST may now be dropped, like those read again on demand.
             session.sync_odoo.get_file_mgr().borrow().keep_reparsed_ast(&path);
         }
         session.sync_odoo.entry_point_mgr.borrow_mut().remove_entries_with_path(&mut session.sync_odoo.symbol_table, &Path::new(&path).to_tree_path().sanitize_cow());
@@ -2445,7 +2449,7 @@ impl Odoo {
         };
         let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path);
         if let Some(file_info) = file_info {
-            if schema != "untitled" && !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+            if schema != "untitled" && !file_info.borrow().file_info_ast.borrow().is_built() {
                 file_info.borrow_mut().prepare_ast(session);
             }
             return Ok(DocumentSymbolFeature::get_symbols(session, &file_info));

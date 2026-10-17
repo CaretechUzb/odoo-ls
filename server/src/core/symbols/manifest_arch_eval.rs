@@ -8,7 +8,7 @@ use crate::core::build_scheduler::BuildScheduler;
 use crate::core::js_module_scope;
 use crate::core::js_utils::read_module_header;
 use crate::core::symbols::symbol_keys::JsFileKey;
-use crate::{constants::{BuildStatus, BuildSteps, DEBUG_STEPS, DiagnosticSource}, core::{csv_arch_builder::CsvArchBuilder, data_hooks, diagnostics::{DiagnosticCode, create_diagnostic}, file_mgr::FileInfo, symbols::{ModuleSymbol, SymbolTable, XmlFileSymbol, symbol_keys::{BuildableSymbolKey, ModuleKey, SourceFileKey, XmlFileKey}}, xml_arch_builder::XmlArchBuilder}, threads::SessionInfo, utils::PathSanitizer};
+use crate::{constants::{BuildStatus, BuildSteps, DEBUG_STEPS, DiagnosticSource}, core::{csv_arch_builder::CsvArchBuilder, data_hooks, diagnostics::{DiagnosticCode, create_diagnostic}, file_mgr::{FileInfo, FileMgr}, symbols::{ModuleSymbol, SymbolTable, XmlFileSymbol, symbol_keys::{BuildableSymbolKey, ModuleKey, SourceFileKey, XmlFileKey}}, xml_arch_builder::XmlArchBuilder}, threads::SessionInfo, utils::PathSanitizer};
 
 const ASSET_FOLDERS: [&str; 3] = ["src", "tests", "lib"];
 
@@ -65,8 +65,13 @@ impl ModuleSymbol {
                     .expect("path should not already exist, as checked above");
                 Self::on_data_file_load(session.st(), csv_sym.into());
                 session.st_mut().add_dependency(symbol_key.into(), csv_sym.into(), BuildSteps::ARCH_EVAL, BuildSteps::ARCH);
-                let Some(data) = file_info.file_info_ast.borrow().text_document.as_ref().map(|td| td.contents().to_string()) else {
+                // `update_file_info` skips a file loaded with version -100 (see
+                // `FileInfo::update`), whose text may have been dropped since.
+                if !file_info.reacquire_text(session) {
                     // File can be invalid (not valid UTF-8 and so text_document is empty)
+                    continue;
+                }
+                let Some(data) = file_info.file_info_ast.borrow().text_document.as_ref().map(|td| td.contents().to_string()) else {
                     continue;
                 };
                 let mut csv_builder = CsvArchBuilder::new();
@@ -173,16 +178,20 @@ impl ModuleSymbol {
             let (_, file_info) = session.sync_odoo.get_file_mgr().borrow_mut().update_file_info(session, file_path_str.as_ref(), None, None, false); //create ast if not in cache
             let mut file_info = file_info.borrow_mut();
             file_info.publish_diagnostics(session);
-            if file_info.file_info_ast.borrow().text_document.as_ref().is_none() { // File can be invalid (not valid UTF-8 and so text_document is empty)
-                continue;
-            }
             ModuleSymbol::load_xml_arch(session, xml_sym, &mut file_info, true);
         }
     }
 
+    /// Build the symbols of an XML file from its text, then drop the text: XML features parse it
+    /// again at each use, reading it from disk when it was dropped.
     fn load_xml_arch(session: &mut SessionInfo, xml_sym: XmlFileKey, file_info: &mut FileInfo, web_asset: bool) {
-        let Some(data) = file_info.file_info_ast.borrow().text_document.as_ref().map(|td| td.contents().to_string()) else {
+        // `update_file_info` skips a file loaded with version -100 (see `FileInfo::update`),
+        // whose text may have been dropped since.
+        if !file_info.reacquire_text(session) {
             // File can be invalid (not valid UTF-8 and so text_document is empty)
+            return;
+        }
+        let Some(data) = file_info.file_info_ast.borrow().text_document.as_ref().map(|td| td.contents().to_string()) else {
             return;
         };
         //That's a little bit crappy, but the SYNTAX step of XML files are done here, as lifetime of roXMLTree are not flexible enough to be separated from the Arch building
@@ -198,6 +207,7 @@ impl ModuleSymbol {
             file_info.replace_diagnostics(DiagnosticSource::XML_SYNTAX, diagnostics);
             file_info.publish_diagnostics(session);
         }
+        file_info.drop_text_if_allowed(session);
     }
 
     fn load_js_assets(session: &mut SessionInfo, module: ModuleKey, files_to_imports: &[PathBuf]) {
@@ -209,7 +219,9 @@ impl ModuleSymbol {
             let file_name = file_path.file_name().unwrap().to_str().unwrap().to_string();
             let js_key = session.st_mut().add_new_js_file(module.into(), &file_name, file_path_str.as_ref())
                 .expect("path should not already exist, as checked above");
-            session.sync_odoo.get_file_mgr().borrow_mut().update_file_info(session, file_path_str.as_ref(), None, None, false); //create ast if not in cache
+            let (_, file_info) = session.sync_odoo.get_file_mgr().borrow_mut().update_file_info(session, file_path_str.as_ref(), None, None, false); //create ast if not in cache
+            // The JsAst is built: the text is not needed until a feature reads it again from disk.
+            FileMgr::drop_text(session, &file_info);
             // as the update_file_info built the arch, let's add the file to the validation queue.
             BuildScheduler::queue(session, js_key);
         }

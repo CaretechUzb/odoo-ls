@@ -163,7 +163,7 @@ impl ReferenceFeature {
                                 }
                             },
                             SourceFileKey::XmlFile(xml_file) => {
-                                let data = dep_file_info.borrow().file_info_ast.borrow().text_document.as_ref()?.contents().to_string();
+                                let Some(data) = FileInfo::text_contents(&dep_file_info, session) else { continue };
                                 let document = roxmltree::Document::parse(&data);
                                 if let Ok(document) = document {
                                     let root = document.root_element();
@@ -172,7 +172,7 @@ impl ReferenceFeature {
                             },
                             SourceFileKey::CsvFile(csv_file) => {
                                 if SymbolTable::is_field(session, definition_source) {
-                                    let data = dep_file_info.borrow().file_info_ast.borrow().text_document.as_ref()?.contents().to_string();
+                                    let Some(data) = FileInfo::text_contents(&dep_file_info, session) else { continue };
                                     let mut csv_reader = csv::ReaderBuilder::new().from_reader(data.as_bytes());
                                     let model_class = session.st().get_in_parents(definition_source, &[SymType::CLASS], true);
                                     if let Some(SymbolKey::Class(model_class)) = model_class
@@ -239,7 +239,7 @@ impl ReferenceFeature {
                                     locations.extend(ReferenceFeature::references_in_file(session, source_file, &file_info, &ReferenceTarget::String(full_xml_id)));
                                 },
                                 SourceFileKey::XmlFile(xml_file) => {
-                                    let data = file_info.borrow().file_info_ast.borrow().text_document.as_ref()?.contents().to_string();
+                                    let Some(data) = FileInfo::text_contents(&file_info, session) else { continue };
                                     let document = roxmltree::Document::parse(&data);
                                     if let Ok(document) = document {
                                         let root = document.root_element();
@@ -247,7 +247,7 @@ impl ReferenceFeature {
                                     }
                                 },
                                 SourceFileKey::CsvFile(csv_file) => {
-                                    let data = file_info.borrow().file_info_ast.borrow().text_document.as_ref()?.contents().to_string();
+                                    let Some(data) = FileInfo::text_contents(&file_info, session) else { continue };
                                     let mut csv_reader = csv::ReaderBuilder::new().from_reader(data.as_bytes());
                                     locations.extend(CsvAstReferenceVisitor::search_target(session, csv_file, &mut csv_reader, None, &ReferenceTarget::String(full_xml_id), &data));
                                 },
@@ -308,8 +308,7 @@ impl ReferenceFeature {
     /// `t-call` / `t-inherit` value); defers to [`collect_template_name_references`].
     fn references_xml_owl(session: &mut SessionInfo, file_info: &Rc<RefCell<FileInfo>>, line: u32, character: u32) -> Option<Vec<Location>> {
         let encoding = session.sync_odoo.encoding;
-        let data = file_info.borrow().file_info_ast.borrow()
-            .text_document.as_ref()?.contents().to_string();
+        let data = FileInfo::text_contents(file_info, session)?;
         let offset = file_info.borrow().position_to_offset(line, character, encoding);
 
         let document = roxmltree::Document::parse(&data).ok()?;
@@ -405,7 +404,7 @@ impl ReferenceFeature {
     /// check the graph index against it.
     pub fn scan_file_references(session: &mut SessionInfo, file: SourceFileKey, target: SymbolKey) -> Vec<Location> {
         let (file_info, _) = FileMgr::get_or_recreate_file_info(session, file);
-        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+        if !file_info.borrow().file_info_ast.borrow().is_built() {
             file_info.borrow_mut().prepare_ast(session);
         }
         ReferenceFeature::references_in_file(session, file, &file_info, &ReferenceTarget::Symbol(target))
@@ -471,7 +470,7 @@ impl ReferenceFeature {
         let Some(file_info) = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path) else {
             return vec![];
         };
-        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+        if !file_info.borrow().file_info_ast.borrow().is_built() {
             file_info.borrow_mut().prepare_ast(session);
         }
         let file_info_ast = file_info.borrow().file_info_ast.clone();

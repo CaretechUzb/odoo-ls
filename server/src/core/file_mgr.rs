@@ -336,12 +336,6 @@ impl Ast {
             _ => panic!("Expected JsAst, found {:?}", self),
         }
     }
-    pub fn is_built(&self) -> bool {
-        match self {
-            Ast::PythonAst(py_ast) => py_ast.indexed_module.is_some(),
-            Ast::JsAst(_) | Ast::XmlAst | Ast::CsvAst => true,
-        }
-    }
     /// Read the AST kind for matching on type only without cloning
     pub fn kind(&self) -> AstKind {
         match self {
@@ -368,20 +362,38 @@ pub struct FileInfoAst {
     pub text_hash: u64,
     pub text_document: Option<TextDocument>,
     pub ast: Ast,
-    /// Line offsets of the text, kept when the text is dropped (see [`Self::drop_ast`]) so that
+    /// Line offsets of the text, kept when the text is dropped (see [`Self::drop_text`]) so that
     /// ranges can still be turned into positions without re-reading or re-parsing the file.
     line_table: Option<LineTable>,
 }
 
 impl FileInfoAst {
-    /// Free the Python AST and source text of a file, keeping its `text_hash` and a [`LineTable`].
-    /// [`FileInfo::prepare_ast`] re-reads and re-parses the file when the AST is needed again.
-    /// Other kinds of files are left untouched.
-    pub fn drop_ast(&mut self) {
-        let Ast::PythonAst(python_ast) = &mut self.ast else {
-            return;
-        };
-        python_ast.indexed_module = None;
+    /// Whether the file is ready for the features: what they read is in memory. That is the AST
+    /// for a Python file, the text for an XML or CSV file (parsed again by each use), and the
+    /// [`JsAst`] for a JS file, which is kept when its text is dropped: a JS feature that needs
+    /// the text asks for it with [`FileInfo::ensure_text`].
+    pub fn is_built(&self) -> bool {
+        match &self.ast {
+            Ast::PythonAst(py_ast) => py_ast.indexed_module.is_some(),
+            Ast::XmlAst | Ast::CsvAst => self.text_document.is_some(),
+            Ast::JsAst(_) => true,
+        }
+    }
+
+    /// Whether the text of the file is in memory.
+    pub fn has_text(&self) -> bool {
+        self.text_document.is_some()
+    }
+
+    /// Free the source text of a file, and its AST for a Python file, keeping its `text_hash` and
+    /// a [`LineTable`]. The [`JsAst`] of a JS file is kept: it is a summary, not the text.
+    /// [`FileInfo::prepare_ast`] re-reads and re-parses a Python file when its AST is needed
+    /// again; [`FileInfo::ensure_text`] re-reads the text of any file.
+    pub fn drop_text(&mut self) {
+        match &mut self.ast {
+            Ast::PythonAst(python_ast) => python_ast.indexed_module = None,
+            Ast::XmlAst | Ast::CsvAst | Ast::JsAst(_) => {},
+        }
         if let Some(text_document) = self.text_document.take() {
             self.line_table = Some(LineTable::new(&text_document));
         }
@@ -523,6 +535,11 @@ impl LineTable {
         (position + remaining).min(line_end.to_u32()) as usize
     }
 
+    /// Heap bytes held by the table, for the build logs.
+    fn heap_size(&self) -> usize {
+        std::mem::size_of_val(self.index.line_starts()) + std::mem::size_of_val(&*self.wide_runs)
+    }
+
     /// Same as `LineIndex::line_end_exclusive` of the line before the one holding `offset`.
     fn prev_line_end(&self, offset: TextSize) -> TextSize {
         let row = self.index.line_index(offset).to_zero_indexed().saturating_sub(1);
@@ -651,7 +668,7 @@ impl FileInfo {
         if old_hash == new_hash {
             // Unchanged content, but the AST may have been dropped (file_cache off): callers expect
             // it back. The build drops it again after the file's next validation.
-            if !self.file_info_ast.borrow().ast.is_built() {
+            if !self.file_info_ast.borrow().is_built() {
                 self._build_ast(session, is_external);
             }
             return false;
@@ -849,7 +866,7 @@ impl FileInfo {
     pub fn prepare_ast(&mut self, session: &mut SessionInfo) {
         let is_python = matches!(self.file_info_ast.borrow().ast, Ast::PythonAst(_));
         let previous_hash = self.file_info_ast.borrow().text_hash;
-        let preloaded = match is_python && self.file_info_ast.borrow().text_document.is_none() {
+        let preloaded = match is_python && !self.file_info_ast.borrow().has_text() {
             // A pre-parse worker may have parsed it ahead of its validation, see `SyncOdoo::build_modules`.
             true => SyncOdoo::take_preloaded(session, &self.uri),
             false => None,
@@ -857,15 +874,8 @@ impl FileInfo {
         if let Some(preloaded) = preloaded {
             self.apply_preloaded(session, preloaded);
         } else {
-            if self.file_info_ast.borrow_mut().text_document.is_none() { //can already be set in xml files
-                match fs::read_to_string(&self.uri) {
-                    Ok(content) => {
-                        self.file_info_ast.borrow_mut().text_document = Some(TextDocument::new(content, self.version.unwrap_or(-1)));
-                    },
-                    Err(_) => {
-                        return;
-                    },
-                };
+            if !self.file_info_ast.borrow().has_text() && !self.reread_text(session) {
+                return;
             }
             {
                 let mut fia = self.file_info_ast.borrow_mut();
@@ -874,29 +884,103 @@ impl FileInfo {
             self._build_ast(session, session.sync_odoo.get_file_mgr().borrow().is_in_workspace(&self.uri));
         }
         let new_hash = self.file_info_ast.borrow().text_hash;
-        if is_python && previous_hash != 0 && new_hash != previous_hash {
-            // The file changed on disk since its AST was dropped, and no event told us yet. Its
-            // symbols (node indexes included) were built from the previous content: have it
-            // reloaded. The watcher event, if one comes, will find the file unchanged.
-            warn!("{} changed on disk since it was parsed: reloading it", self.uri);
-            if !session.sync_odoo.files_changed_on_disk.contains(&self.uri) {
-                session.sync_odoo.files_changed_on_disk.push(self.uri.clone());
-            }
-            session.request_delayed_rebuild();
+        if previous_hash != 0 && new_hash != previous_hash {
+            self.reload_changed_on_disk(session);
         }
-        if is_python && !self.opened && !session.sync_odoo.config.file_cache() {
-            AST_REPARSES.fetch_add(1, Ordering::Relaxed);
+        if !self.opened && !session.sync_odoo.config.file_cache() {
+            if is_python {
+                AST_REPARSES.fetch_add(1, Ordering::Relaxed);
+            }
             session.sync_odoo.get_file_mgr().borrow().keep_reparsed_ast(&self.uri);
         }
     }
 
-    /// Re-acquire the AST of `file_info` if it was dropped, see [`Self::prepare_ast`]. Returns
-    /// false if there is still no AST, e.g. the file was deleted from disk since.
+    /// Re-acquire the AST of `file_info` if it was dropped, see [`Self::prepare_ast`]: for an XML
+    /// or CSV file that is its text, and a JS file always has its AST (see
+    /// [`FileInfoAst::is_built`]). Returns false if there is still no AST, e.g. the file was
+    /// deleted from disk since.
     pub fn ensure_ast(file_info: &Rc<RefCell<FileInfo>>, session: &mut SessionInfo) -> bool {
-        if !file_info.borrow().file_info_ast.borrow().ast.is_built() {
+        if !file_info.borrow().file_info_ast.borrow().is_built() {
             file_info.borrow_mut().prepare_ast(session);
         }
-        file_info.borrow().file_info_ast.borrow().ast.is_built()
+        file_info.borrow().file_info_ast.borrow().is_built()
+    }
+
+    /// Re-read the text of `file_info` if it was dropped, without parsing it: the AST of a Python
+    /// file stays dropped, and the [`JsAst`] of a JS file is not built again. Returns false if
+    /// there is still no text, e.g. the file was deleted from disk since.
+    pub fn ensure_text(file_info: &Rc<RefCell<FileInfo>>, session: &mut SessionInfo) -> bool {
+        if file_info.borrow().file_info_ast.borrow().has_text() {
+            return true;
+        }
+        file_info.borrow_mut().reread_text(session)
+    }
+
+    /// [`Self::ensure_text`] for callers holding the file mutably.
+    pub fn reacquire_text(&mut self, session: &mut SessionInfo) -> bool {
+        self.file_info_ast.borrow().has_text() || self.reread_text(session)
+    }
+
+    /// The text of `file_info`, read again from disk if it was dropped (see [`Self::ensure_text`]).
+    pub fn text_contents(file_info: &Rc<RefCell<FileInfo>>, session: &mut SessionInfo) -> Option<String> {
+        if !Self::ensure_text(file_info, session) {
+            return None;
+        }
+        file_info.borrow().file_info_ast.borrow().text_document.as_ref().map(|td| td.contents().to_string())
+    }
+
+    /// Read the dropped text of this file again from disk, without parsing it. `text_hash` stays
+    /// the hash of the content the file was built from (only [`Self::prepare_ast`], which parses
+    /// the new content, moves it): a content that changed on disk has the file reloaded by the
+    /// next rebuild, which then sees the change. Like a re-parsed AST, the text is bounded by
+    /// [`FileMgr::keep_reparsed_ast`].
+    fn reread_text(&mut self, session: &mut SessionInfo) -> bool {
+        let Ok(content) = fs::read_to_string(&self.uri) else {
+            return false;
+        };
+        let text_document = TextDocument::new(content, self.version.unwrap_or(-1));
+        let hash = hash_text_document(&text_document);
+        let (built_hash, is_python) = {
+            let mut fia = self.file_info_ast.borrow_mut();
+            fia.text_document = Some(text_document);
+            // The text converts the positions from now on; `drop_text` makes a new table.
+            fia.line_table = None;
+            (fia.text_hash, matches!(fia.ast, Ast::PythonAst(_)))
+        };
+        if !is_python {
+            TEXT_REREADS.fetch_add(1, Ordering::Relaxed);
+        }
+        if built_hash != 0 && hash != built_hash {
+            self.reload_changed_on_disk(session);
+        }
+        if !self.opened && !session.sync_odoo.config.file_cache() {
+            session.sync_odoo.get_file_mgr().borrow().keep_reparsed_ast(&self.uri);
+        }
+        true
+    }
+
+    /// The file changed on disk since it was built, and no event told us yet. Its symbols (node
+    /// indexes included) were built from the previous content: have it reloaded by the next
+    /// rebuild, which moves its `text_hash` to the new content. A watcher event that comes after
+    /// the reload finds the file unchanged; one that comes before reloads the file itself and
+    /// takes it off the queue (`Odoo::handle_file_update`).
+    fn reload_changed_on_disk(&self, session: &mut SessionInfo) {
+        if session.sync_odoo.files_changed_on_disk.contains(&self.uri) {
+            return;
+        }
+        warn!("{} changed on disk since it was built: reloading it", self.uri);
+        session.sync_odoo.files_changed_on_disk.push(self.uri.clone());
+        session.request_delayed_rebuild();
+    }
+
+    /// Drop the text of this file (see [`FileInfoAst::drop_text`]), unless `file_cache` keeps
+    /// every text in memory or the file is opened. For callers holding the file mutably; the
+    /// others use [`FileMgr::drop_text`].
+    pub fn drop_text_if_allowed(&mut self, session: &SessionInfo) {
+        if !session.sync_odoo.config.file_cache() && !self.opened
+            && let Ok(mut file_info_ast) = self.file_info_ast.try_borrow_mut() {
+                file_info_ast.drop_text();
+            }
     }
 
     /// Scan a parsed module's comment tokens for `noqa` directives and (in test mode)
@@ -1227,6 +1311,7 @@ impl FileInfo {
     }
 
     fn try_offset_to_position_with_text_document(text_document: &TextDocument, offset: u32, encoding: PositionEncoding) -> Option<Position> {
+        let offset = floor_char_boundary(text_document.contents(), offset as usize) as u32;
         let location = text_document.index().source_location(offset.into(), text_document.contents(), encoding);
         let line = u32::try_from(location.line.to_zero_indexed()).ok()?;
         let character = u32::try_from(location.character_offset.to_zero_indexed()).ok()?;
@@ -1312,7 +1397,8 @@ pub struct FileMgr {
     pub files: HashMap<String, Rc<RefCell<FileInfo>>>,
     untitled_files: HashMap<String, Rc<RefCell<FileInfo>>>, // key: untitled URI or unique name
     workspace_folders: HashSet<(String, Uri)>,
-    /// Paths of the non-opened files whose dropped AST was parsed again on demand, oldest first.
+    /// Paths of the non-opened files whose dropped AST or text was read again on demand, oldest
+    /// first.
     /// Bounded by [`REPARSED_AST_CAPACITY`]: see [`Self::keep_reparsed_ast`].
     reparsed_asts: RefCell<VecDeque<String>>,
 }
@@ -1323,6 +1409,21 @@ const REPARSED_AST_CAPACITY: usize = 64;
 
 /// Number of dropped ASTs parsed again, for the build logs.
 pub static AST_REPARSES: AtomicUsize = AtomicUsize::new(0);
+
+/// Number of dropped XML, CSV and JS texts read again from disk, for the build logs.
+pub static TEXT_REREADS: AtomicUsize = AtomicUsize::new(0);
+
+/// What the file texts cost in memory, for the build logs: bytes of the texts kept, per kind of
+/// file, and heap bytes of the [`LineTable`]s standing in for the dropped ones.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TextMemory {
+    pub python: usize,
+    pub xml: usize,
+    pub csv: usize,
+    pub js: usize,
+    pub line_tables: usize,
+    pub line_table_count: usize,
+}
 
 impl Default for FileMgr {
     fn default() -> Self {
@@ -1366,24 +1467,25 @@ impl FileMgr {
             Position::new(range.end().to_u32(), 0))
     }
 
-    /// Drop the AST and text of a file nobody has opened (see [`FileInfoAst::drop_ast`]), unless
-    /// `file_cache` keeps every AST in memory. A file in use right now keeps its AST.
-    pub fn drop_ast(session: &SessionInfo, file_info: &Rc<RefCell<FileInfo>>) {
+    /// Drop the text of a file nobody has opened, and its AST for a Python file (see
+    /// [`FileInfoAst::drop_text`]), unless `file_cache` keeps everything in memory. A file in use
+    /// right now keeps them.
+    pub fn drop_text(session: &SessionInfo, file_info: &Rc<RefCell<FileInfo>>) {
         if !session.sync_odoo.config.file_cache() {
-            Self::try_drop_ast(file_info);
+            Self::try_drop_text(file_info);
         }
     }
 
-    fn try_drop_ast(file_info: &Rc<RefCell<FileInfo>>) {
+    fn try_drop_text(file_info: &Rc<RefCell<FileInfo>>) {
         if let Ok(file_info) = file_info.try_borrow()
             && !file_info.opened
             && let Ok(mut file_info_ast) = file_info.file_info_ast.try_borrow_mut() {
-                file_info_ast.drop_ast();
+                file_info_ast.drop_text();
             }
     }
 
-    /// Note that the dropped AST of `path` was parsed again. Only the [`REPARSED_AST_CAPACITY`]
-    /// most recent of these are kept, the AST of the oldest is dropped again.
+    /// Note that the dropped AST or text of `path` was read again. Only the
+    /// [`REPARSED_AST_CAPACITY`] most recent of these are kept, the oldest is dropped again.
     pub fn keep_reparsed_ast(&self, path: &str) {
         let mut reparsed = self.reparsed_asts.borrow_mut();
         if let Some(index) = reparsed.iter().position(|p| p == path) {
@@ -1393,9 +1495,33 @@ impl FileMgr {
         while reparsed.len() > REPARSED_AST_CAPACITY {
             let oldest = reparsed.pop_front().unwrap();
             if let Some(file_info) = self.files.get(&oldest) {
-                Self::try_drop_ast(file_info);
+                Self::try_drop_text(file_info);
             }
         }
+    }
+
+    /// What the texts of the files cost in memory right now, see [`TextMemory`]. Files borrowed
+    /// at the time are skipped.
+    pub fn text_memory(&self) -> TextMemory {
+        let mut memory = TextMemory::default();
+        for file_info in self.files.values() {
+            let Ok(file_info) = file_info.try_borrow() else { continue };
+            let Ok(file_info_ast) = file_info.file_info_ast.try_borrow() else { continue };
+            if let Some(text_document) = file_info_ast.text_document.as_ref() {
+                let len = text_document.contents().len();
+                match file_info_ast.ast.kind() {
+                    AstKind::PythonAst => memory.python += len,
+                    AstKind::XmlAst => memory.xml += len,
+                    AstKind::CsvAst => memory.csv += len,
+                    AstKind::JsAst => memory.js += len,
+                }
+            }
+            if let Some(line_table) = file_info_ast.line_table.as_ref() {
+                memory.line_tables += line_table.heap_size();
+                memory.line_table_count += 1;
+            }
+        }
+        memory
     }
 
     pub fn get_file_info(&self, path: &str) -> Option<Rc<RefCell<FileInfo>>> {
@@ -1495,11 +1621,12 @@ impl FileMgr {
             let ep_mgr = session.sync_odoo.entry_point_mgr.borrow();
             let is_part_of_ep = ep_mgr.iter_all_but_public().any(|entry| uri.starts_with(&entry.borrow().path));
             drop(ep_mgr);
-            let was_built = file_info_mut.file_info_ast.borrow().ast.is_built();
+            let was_ready = file_info_mut.file_info_ast.borrow().is_built() && file_info_mut.file_info_ast.borrow().has_text();
             updated = file_info_mut.update(session, uri, content, version, !is_part_of_ep, force, is_untitled);
-            // Unchanged content gave a dropped AST back (see `FileInfo::update`): bound it like a re-parse.
-            if !updated && !was_built && !file_info_mut.opened && !session.sync_odoo.config.file_cache()
-                && file_info_mut.file_info_ast.borrow().ast.is_built() {
+            // Unchanged content gave a dropped AST or text back (see `FileInfo::update`): bound it
+            // like a re-parse.
+            if !updated && !was_ready && !file_info_mut.opened && !session.sync_odoo.config.file_cache()
+                && file_info_mut.file_info_ast.borrow().is_built() {
                     drop(file_info_mut);
                     self.keep_reparsed_ast(uri);
                 }
@@ -1749,14 +1876,25 @@ pub fn hash_text_document(text: &TextDocument) -> u64 {
     hasher.finish()
 }
 
+/// `offset` clamped to the text, moved back to the start of the character it falls in. An offset
+/// computed on a previous content (the file changed on disk since its symbols were built) then
+/// gives a wrong position until the file is rebuilt, instead of a panic.
+fn floor_char_boundary(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
 pub fn offset_to_position_with_line_index(
     index: &LineIndex,
     text: &str,
     offset: usize,
     encoding: PositionEncoding
 ) -> Position {
-    // clamp offset to text length
-    let offset = u32::try_from(offset.min(text.len())).expect("offset fits in u32");
+    // clamp offset to text length, and to a character boundary
+    let offset = u32::try_from(floor_char_boundary(text, offset)).expect("offset fits in u32");
     let location = index.source_location(offset.into(), text, encoding);
     let line = u32::try_from(location.line.to_zero_indexed()).expect("row usize fits in u32");
     let character = u32::try_from(location.character_offset.to_zero_indexed())
@@ -1889,6 +2027,25 @@ export class Counter extends Component {
 mod line_table_tests {
     use super::*;
 
+    /// An offset inside a character (computed on a previous content of the file) converts to the
+    /// position of that character instead of panicking, in every encoding.
+    #[test]
+    fn offset_inside_a_character_converts_to_its_start() {
+        let text = "aé\n😀中b";
+        let text_document = TextDocument::new(text.to_string(), -1);
+        for offset in 0..=text.len() as u32 + 2 {
+            let start = floor_char_boundary(text, offset as usize) as u32;
+            for encoding in [PositionEncoding::Utf8, PositionEncoding::Utf16, PositionEncoding::Utf32] {
+                let expected = FileInfo::offset_to_position_with_text_document(&text_document, start, encoding);
+                assert_eq!(FileInfo::offset_to_position_with_text_document(&text_document, offset, encoding), expected, "offset {offset}, {encoding:?}");
+                assert_eq!(FileInfo::try_offset_to_position_with_text_document(&text_document, offset, encoding), Some(expected), "offset {offset}, {encoding:?}");
+            }
+        }
+        assert_eq!(floor_char_boundary(text, 2), 1);
+        assert_eq!(floor_char_boundary(text, 6), 4);
+        assert_eq!(floor_char_boundary(text, 100), text.len());
+    }
+
     /// A dropped text keeps converting offsets and positions exactly as the text did, in every
     /// encoding: 2-, 3- and 4-byte characters, adjacent runs of different widths, CRLF line
     /// ends, no trailing newline, columns and lines past the end.
@@ -1901,6 +2058,9 @@ mod line_table_tests {
             "é中😀é中😀\n中文字符 = '😀😀'\r\n\r\nx = 'ééé' + \"😀\"\nend é",
             "# -*- coding: utf-8 -*-\n# Комментарий: ünïcödé ✓\ndef f():\n    return 'Привет, мир 🌍'\n",
             "😀\n",
+            // XML and CSV data files: multi-byte text broken by ASCII spaces and markup.
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<odoo>\n  <record id=\"r1\" model=\"res.partner\">\n    <field name=\"name\">Клиника «Здоровье» — филиал №2</field>\n    <field name=\"comment\">Ёлка 😀 ü</field>\n  </record>\n</odoo>",
+            "id,name,state_id:id\nr_1,\"Тошкент, Ўзбекистон\",base.state_1\r\nr_2,中文 😀,\n",
         ];
         for text in texts {
             let text_document = TextDocument::new(text.to_string(), -1);

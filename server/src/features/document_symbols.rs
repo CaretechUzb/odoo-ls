@@ -28,14 +28,18 @@ impl DocumentSymbolFeature {
             return if results.is_empty() { None } else { Some(DocumentSymbolResponse::Nested(results)) };
         }
 
+        let is_xml = file_info.borrow().uri.ends_with(".xml");
+        let xml = match is_xml {
+            true => Some(FileInfo::text_contents(file_info, session)?),
+            false => None,
+        };
         let file_info_bw = file_info.borrow();
         let file_info_ast = file_info_bw.file_info_ast.borrow();
         if let Some(ast) = &file_info_ast.get_stmts() {
             for stmt in ast.iter() {
                 DocumentSymbolFeature::visit_stmt(session, stmt, &mut results, file_info);
             }
-        } else if file_info_bw.uri.ends_with(".xml") {
-            let data = file_info_ast.text_document.as_ref()?.contents();
+        } else if let Some(data) = xml.as_deref() {
             let document = roxmltree::Document::parse(data);
             if let Ok(document) = document {
                 DocumentSymbolFeature::visit_xml_document(session, document, &mut results, file_info);

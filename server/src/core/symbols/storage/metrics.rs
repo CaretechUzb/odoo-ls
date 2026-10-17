@@ -1,4 +1,7 @@
 use tracing::{debug, info};
+use std::sync::atomic::Ordering;
+use crate::core::file_mgr::{AST_REPARSES, TEXT_REREADS};
+use crate::core::odoo::SyncOdoo;
 use crate::core::symbols::SymbolTable;
 
 macro_rules! log_symbol_table {
@@ -44,25 +47,32 @@ impl PhaseMemoryLogger {
         (initializing && !queues_empty).then(Self::default)
     }
 
-    pub fn check(&mut self, st: &SymbolTable, arch_empty: bool, eval_empty: bool, val_empty: bool) {
+    pub fn check(&mut self, sync_odoo: &SyncOdoo, arch_empty: bool, eval_empty: bool, val_empty: bool) {
         self.arch_seen |= !arch_empty;
         self.eval_seen |= !eval_empty;
         self.val_seen |= !val_empty;
-        if arch_empty && self.arch_seen && !self.arch { self.arch = true; self.log(st, "ARCH drained"); }
-        if arch_empty && eval_empty && self.eval_seen && !self.eval { self.eval = true; self.log(st, "ARCH_EVAL drained"); }
-        if arch_empty && eval_empty && val_empty && self.val_seen && !self.val { self.val = true; self.log(st, "VALIDATION drained"); }
+        if arch_empty && self.arch_seen && !self.arch { self.arch = true; self.log(sync_odoo, "ARCH drained"); }
+        if arch_empty && eval_empty && self.eval_seen && !self.eval { self.eval = true; self.log(sync_odoo, "ARCH_EVAL drained"); }
+        if arch_empty && eval_empty && val_empty && self.val_seen && !self.val { self.val = true; self.log(sync_odoo, "VALIDATION drained"); }
     }
-    fn log(&self, st: &SymbolTable, label: &str) {
-        log_phase_memory(st, label);
+    fn log(&self, sync_odoo: &SyncOdoo, label: &str) {
+        log_phase_memory(sync_odoo, label);
     }
 }
 
-/// jemalloc stats + symbol counts at info level, labelled.
-pub fn log_phase_memory(st: &SymbolTable, label: &str) {
+/// jemalloc stats, symbol counts and the memory of the file texts at info level, labelled.
+pub fn log_phase_memory(sync_odoo: &SyncOdoo, label: &str) {
+    let st = &sync_odoo.symbol_table;
     log_memory_usage(label);
     info!("[mem] {} symbol counts: roots={} namespaces={} packages={} modules={} files={} classes={} functions={} variables={} xml={} csv={}", label,
         st.roots.len(), st.namespaces.len(), st.python_packages.len(), st.modules.len(), st.files.len(), st.classes.len(), st.functions.len(), st.variables.len(), st.xml_files.len(), st.csv_files.len());
-    info!("[mem] {} dropped ASTs parsed again: {}", label, crate::core::file_mgr::AST_REPARSES.load(std::sync::atomic::Ordering::Relaxed));
+    info!("[mem] {} dropped ASTs parsed again: {}", label, AST_REPARSES.load(Ordering::Relaxed));
+    if let Ok(file_mgr) = sync_odoo.get_file_mgr().try_borrow() {
+        let texts = file_mgr.text_memory();
+        info!("[mem] {} retained texts: py={} xml={} csv={} js={} bytes, line tables={} bytes ({} files)", label,
+            texts.python, texts.xml, texts.csv, texts.js, texts.line_tables, texts.line_table_count);
+    }
+    info!("[mem] {} dropped texts read again: {}", label, TEXT_REREADS.load(Ordering::Relaxed));
 }
 
 pub fn log_is_in_workspace(symbol_table: &SymbolTable) {

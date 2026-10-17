@@ -269,11 +269,7 @@ pub fn semantic_tokens_xml(session: &mut SessionInfo, file_info: &Rc<RefCell<Fil
     let mut raw_tokens: Vec<(Range, u32, u32)> = vec![];
 
     // 1. Template-name tokens. Independent of tsserver: we only need to parse the XML.
-    let xml = {
-        let fi = file_info.borrow();
-        let fia = fi.file_info_ast.borrow();
-        fia.text_document.as_ref().map(|td| td.contents().to_string())
-    };
+    let xml = FileInfo::text_contents(file_info, session);
     if let Some(xml) = xml.as_deref() && let Ok(document) = roxmltree::Document::parse(xml)
     {
         let mut names = vec![];
@@ -563,13 +559,8 @@ pub(crate) fn map_virtual_ref(
 /// component's doc imports its class from a per-file shim instead.
 pub(crate) fn build_virtual_docs(session: &mut SessionInfo, file_info: &Rc<RefCell<FileInfo>>) -> Vec<OwlVirtualDoc> {
     // 1. XML content.
-    let xml = {
-        let fi = file_info.borrow();
-        let fia = fi.file_info_ast.borrow();
-        match fia.text_document.as_ref() {
-            Some(td) => td.contents().to_string(),
-            None => return vec![],
-        }
+    let Some(xml) = FileInfo::text_contents(file_info, session) else {
+        return vec![];
     };
 
     // 2. Collect every directive expression, tagged with its enclosing template.
@@ -940,14 +931,11 @@ fn shim_module_specifier(real_js_path: &str) -> String {
 /// descriptors — and thus `class_name_byte` — were computed from) over disk.
 pub(crate) fn read_real_js(session: &mut SessionInfo, file_path: &str) -> Option<String> {
     let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(file_path);
-    if let Some(file_info) = file_info {
-        let fi = file_info.borrow();
-        let fia = fi.file_info_ast.borrow();
-        if let Some(td) = fia.text_document.as_ref() {
-            return Some(td.contents().to_string());
-        }
+    match file_info {
+        // A text read again from disk is checked against the content the file was built from.
+        Some(file_info) => FileInfo::text_contents(&file_info, session),
+        None => std::fs::read_to_string(file_path).ok(),
     }
-    std::fs::read_to_string(file_path).ok()
 }
 
 /// Convert a byte range in `content` — a file that may not be open in the `FileMgr` (so no

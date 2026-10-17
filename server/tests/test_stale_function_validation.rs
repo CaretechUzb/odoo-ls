@@ -66,8 +66,8 @@ fn test_function_validation_after_disk_change_fails_closed_and_rebuilds_file() {
     session.st_mut().set_build_status(SymbolKey::Function(method).unwrap_buildable_key(), BuildSteps::VALIDATION, BuildStatus::PENDING);
 
     let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&file_path).expect("file info");
-    FileMgr::drop_ast(&session, &file_info);
-    assert!(!file_info.borrow().file_info_ast.borrow().ast.is_built(), "the AST should be dropped");
+    FileMgr::drop_text(&session, &file_info);
+    assert!(!file_info.borrow().file_info_ast.borrow().is_built(), "the AST should be dropped");
 
     // The file changes on disk; no event has arrived yet.
     fs::write(&file_path, CHANGED_ON_DISK).unwrap();

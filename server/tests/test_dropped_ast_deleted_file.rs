@@ -45,7 +45,7 @@ fn test_features_on_deleted_file_with_dropped_ast() {
     let sanitized = path.sanitize();
     let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&sanitized).expect("file info not found");
     let file_symbol = SyncOdoo::get_symbol_of_opened_file(&mut session, &path).expect("file symbol not found");
-    assert!(!file_info.borrow().file_info_ast.borrow().ast.is_built(), "the AST should have been dropped after validation");
+    assert!(!file_info.borrow().file_info_ast.borrow().is_built(), "the AST should have been dropped after validation");
 
     let _moved = MovedAway::new(&path);
     assert_eq!(test_utils::get_hover_markdown(&mut session, file_symbol, &file_info, 3, 8), None);

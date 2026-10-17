@@ -39,7 +39,7 @@ fn test_incremental_rebuild_parses_a_changed_file_once() {
     BuildScheduler::process_rebuilds(&mut session, false);
     session.sync_odoo.state_init = InitState::ODOO_READY;
     let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(&changed_path).expect("file info");
-    assert!(!file_info.borrow().file_info_ast.borrow().ast.is_built(), "the AST is dropped after validation");
+    assert!(!file_info.borrow().file_info_ast.borrow().is_built(), "the AST is dropped after validation");
 
     // Changed on disk, the watcher tells us: read and parsed once by the update, then ARCH,
     // ARCH_EVAL and VALIDATION in one rebuild.
@@ -50,5 +50,5 @@ fn test_incremental_rebuild_parses_a_changed_file_once() {
     });
     assert!(!session.sync_odoo.get_symbol(&changed_path, (&[], &["second"]), u32::MAX).is_empty(), "the change was built");
     assert_eq!(AST_REPARSES.load(Ordering::Relaxed) - reparses, 0, "the validation must reuse the AST of the ARCH_EVAL");
-    assert!(!file_info.borrow().file_info_ast.borrow().ast.is_built(), "the validation still drops the AST");
+    assert!(!file_info.borrow().file_info_ast.borrow().is_built(), "the validation still drops the AST");
 }
