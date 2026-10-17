@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use lsp_server::{ErrorCode, ResponseError};
-use lsp_types::{CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, Range, SymbolKind, TypeHierarchyItem};
+use lsp_types::{CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, Position, Range, SymbolKind, TypeHierarchyItem};
 use serde_json::json;
 
 use crate::constants::SymType;
@@ -38,26 +38,32 @@ pub fn db_failure(session: &mut SessionInfo, reason: String) -> ResponseError {
     ResponseError { code: ErrorCode::RequestFailed as i32, message: format!("{UNAVAILABLE_PREFIX}{reason}"), data: None }
 }
 
-/// Converts byte offsets to LSP ranges, loading each file's text once.
+/// Converts byte offsets to LSP ranges. A loaded file answers from its text, or from the line
+/// table kept when its text was dropped; other files, and the lines the line table cannot
+/// convert alone, are read from disk once per file (never parsed).
 #[derive(Default)]
 pub struct RangeConverter {
+    files: HashMap<String, Option<Rc<RefCell<FileInfo>>>>,
     texts: HashMap<String, Option<TextDocument>>,
 }
 
 impl RangeConverter {
     pub fn range(&mut self, session: &SessionInfo, path: &str, start: u32, end: u32) -> Range {
+        Range { start: self.position(session, path, start), end: self.position(session, path, end) }
+    }
+
+    fn position(&mut self, session: &SessionInfo, path: &str, offset: u32) -> Position {
         let encoding = session.sync_odoo.encoding;
-        let document = self.texts.entry(path.to_string()).or_insert_with(|| {
-            let loaded = session.sync_odoo.get_file_mgr().borrow().get_file_info(path)
-                .and_then(|fi| fi.borrow().file_info_ast.borrow().text_document.as_ref().map(|t| t.contents().to_string()));
-            loaded.or_else(|| std::fs::read_to_string(path).ok()).map(|text| TextDocument::new(text, -1))
-        });
+        let file_info = self.files.entry(path.to_string())
+            .or_insert_with(|| session.sync_odoo.get_file_mgr().borrow().get_file_info(path));
+        if let Some(position) = file_info.as_ref().and_then(|fi| fi.borrow().offset_to_position_in_memory(offset, encoding)) {
+            return position;
+        }
+        let document = self.texts.entry(path.to_string())
+            .or_insert_with(|| std::fs::read_to_string(path).ok().map(|text| TextDocument::new(text, -1)));
         match document {
-            Some(document) => Range {
-                start: offset_to_position_with_line_index(document.index(), document.contents(), start as usize, encoding),
-                end: offset_to_position_with_line_index(document.index(), document.contents(), end as usize, encoding),
-            },
-            None => Range::default(),
+            Some(document) => offset_to_position_with_line_index(document.index(), document.contents(), offset as usize, encoding),
+            None => Position::default(),
         }
     }
 }
@@ -120,8 +126,7 @@ pub fn type_item(session: &SessionInfo, ranges: &mut RangeConverter, info: &Node
 pub fn node_of_symbol(session: &SessionInfo, sym: SymbolKey) -> Option<NodeInfo> {
     let file = session.st().get_file(sym)?;
     let path = session.st().file_path(file).to_string();
-    let text = session.sync_odoo.get_file_mgr().borrow().get_file_info(&path)
-        .and_then(|fi| fi.borrow().file_info_ast.borrow().text_document.as_ref().map(|t| t.contents().to_string()));
+    let text = graph_recorder::file_text(session, &path);
     graph_recorder::node_info(session.st(), &path, text.as_deref(), sym)
 }
 

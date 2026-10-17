@@ -441,22 +441,32 @@ impl LineTable {
 
     /// Same as [`offset_to_position_with_line_index`] on the dropped text.
     fn offset_to_position(&self, path: &str, offset: u32, encoding: PositionEncoding) -> Position {
+        if let Some(position) = self.offset_to_position_in_memory(offset, encoding) {
+            return position;
+        }
         let offset = TextSize::new(offset).min(self.text_len);
         let row = self.index.line_index(offset).to_zero_indexed();
         let line_start = self.index.line_starts()[row];
         let bytes = (offset - line_start).to_usize();
-        let needs_text = !matches!(encoding, PositionEncoding::Utf8) && self.non_ascii_lines.binary_search(&(row as u32)).is_ok();
-        let character = if needs_text {
-            Self::with_disk_text(path, |text_document| {
-                text_document.contents().get(line_start.to_usize()..offset.to_usize()).map(|s| match encoding {
-                    PositionEncoding::Utf16 => s.encode_utf16().count(),
-                    _ => s.chars().count(),
-                })
-            }).flatten().unwrap_or(bytes)
-        } else {
-            bytes
-        };
+        let character = Self::with_disk_text(path, |text_document| {
+            text_document.contents().get(line_start.to_usize()..offset.to_usize()).map(|s| match encoding {
+                PositionEncoding::Utf16 => s.encode_utf16().count(),
+                _ => s.chars().count(),
+            })
+        }).flatten().unwrap_or(bytes);
         Position::new(row as u32, character as u32)
+    }
+
+    /// [`Self::offset_to_position`] when the table alone can answer: None for a UTF-16/32
+    /// column on a line holding non-ASCII text.
+    fn offset_to_position_in_memory(&self, offset: u32, encoding: PositionEncoding) -> Option<Position> {
+        let offset = TextSize::new(offset).min(self.text_len);
+        let row = self.index.line_index(offset).to_zero_indexed();
+        if !matches!(encoding, PositionEncoding::Utf8) && self.non_ascii_lines.binary_search(&(row as u32)).is_ok() {
+            return None;
+        }
+        let line_start = self.index.line_starts()[row];
+        Some(Position::new(row as u32, (offset - line_start).to_u32()))
     }
 
     /// Same as `LineIndex::line_end_exclusive` of the line before the one holding `offset`.
@@ -1078,6 +1088,16 @@ impl FileInfo {
             return Some(line_table.offset_to_position(&self.uri, offset, encoding));
         }
         FileInfo::try_offset_to_position_with_text_document(fia.text_document.as_ref()?, offset, encoding)
+    }
+
+    /// Position of `offset` from what is in memory: the text, or the [`LineTable`] of a dropped
+    /// text when it can answer without reading the file. None otherwise.
+    pub fn offset_to_position_in_memory(&self, offset: u32, encoding: PositionEncoding) -> Option<Position> {
+        let fia = self.file_info_ast.borrow();
+        if let Some(text_document) = fia.text_document.as_ref() {
+            return Some(offset_to_position_with_line_index(text_document.index(), text_document.contents(), offset as usize, encoding));
+        }
+        fia.line_table.as_ref()?.offset_to_position_in_memory(offset, encoding)
     }
 
     pub fn text_range_to_range(&self, range: TextRange, encoding: PositionEncoding) -> Range {

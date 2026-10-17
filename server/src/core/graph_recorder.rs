@@ -661,12 +661,17 @@ pub fn file_symbol_for_path(session: &SessionInfo, path: &str) -> Option<SourceF
     None
 }
 
-/// Text of the file at `path` if loaded (used to locate def/class names).
-fn file_text(session: &SessionInfo, path: &str) -> Option<String> {
+/// Text of a loaded file at `path`, used to locate def/class names. When the text of a file
+/// nobody opened was dropped (`file_cache` off), the file is read again, not parsed: without it
+/// a node would get its whole definition as name range, unlike with `file_cache` on.
+pub fn file_text(session: &SessionInfo, path: &str) -> Option<String> {
     let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(path)?;
     let file_info = file_info.borrow();
     let ast = file_info.file_info_ast.borrow();
-    ast.text_document.as_ref().map(|t| t.contents().to_string())
+    match ast.text_document.as_ref() {
+        Some(text_document) => Some(text_document.contents().to_string()),
+        None => std::fs::read_to_string(path).ok(),
+    }
 }
 
 /// Indexed symbols of `file` in a stable order: the file, then a depth-first walk of classes
