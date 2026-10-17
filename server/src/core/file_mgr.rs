@@ -423,7 +423,7 @@ impl FileInfoAst {
 }
 
 /// What is kept of a dropped [`TextDocument`]: its line starts, its length and where its
-/// non-ASCII characters are. That is enough to convert between offsets and positions in every
+/// non-ASCII characters are. Also built for a text in memory to publish its diagnostics. That is enough to convert between offsets and positions in every
 /// encoding exactly as the text would, without reading the file again.
 #[derive(Debug)]
 struct LineTable {
@@ -486,12 +486,17 @@ impl LineTable {
 
     /// Same as [`offset_to_position_with_line_index`] on the dropped text.
     fn offset_to_position(&self, offset: u32, encoding: PositionEncoding) -> Position {
-        let offset = TextSize::new(offset).min(self.text_len);
+        let mut offset = TextSize::new(offset).min(self.text_len);
         let row = self.index.line_index(offset).to_zero_indexed();
         let line_start = self.index.line_starts()[row];
+        let runs = self.runs_of_line(line_start, offset);
+        // An offset inside a character is the start of that character (`floor_char_boundary`).
+        if let Some(run) = runs.last() && offset.to_u32() < run.end() {
+            offset -= TextSize::new((offset.to_u32() - run.start) % run.utf8_width as u32);
+        }
         let mut character = (offset - line_start).to_u32();
         if !matches!(encoding, PositionEncoding::Utf8) {
-            for run in self.runs_of_line(line_start, offset) {
+            for run in runs {
                 let covered = run.chars as u32 * run.utf8_width as u32;
                 let covered = covered.min(offset.to_u32() - run.start) / run.utf8_width as u32;
                 character -= covered * (run.utf8_width as u32 - run.units(encoding));
@@ -1165,17 +1170,34 @@ impl FileInfo {
         self.forget_diagnostics();
     }
 
-    fn update_range(&self, mut diagnostic: Diagnostic, encoding: PositionEncoding) -> Diagnostic {
-        diagnostic.range.start = self.offset_to_position(diagnostic.range.start.line, encoding);
-        diagnostic.range.end = self.offset_to_position(diagnostic.range.end.line, encoding);
+    /// Convert the offsets stored in `diagnostic` to positions, through `line_table` when given.
+    fn update_range(&self, mut diagnostic: Diagnostic, encoding: PositionEncoding, line_table: Option<&LineTable>) -> Diagnostic {
+        let to_position = |offset: u32| match line_table {
+            Some(line_table) => line_table.offset_to_position(offset, encoding),
+            None => self.offset_to_position(offset, encoding),
+        };
+        diagnostic.range.start = to_position(diagnostic.range.start.line);
+        diagnostic.range.end = to_position(diagnostic.range.end.line);
         if let Some(ref mut related_information) = diagnostic.related_information {
             for related in related_information.iter_mut() {
-                related.location.range.start = self.offset_to_position(related.location.range.start.line, encoding);
-                related.location.range.end = self.offset_to_position(related.location.range.end.line, encoding);
+                related.location.range.start = to_position(related.location.range.start.line);
+                related.location.range.end = to_position(related.location.range.end.line);
             }
         }
         diagnostic
     }
+
+    /// A [`LineTable`] of the text in memory, to convert the offsets of `diagnostic_count`
+    /// diagnostics. `LineIndex` counts the characters from the start of the line for each offset
+    /// of a non-ASCII text, which takes seconds on a minified JS bundle (one line of megabytes,
+    /// thousands of diagnostics); the table finds them in a few steps. None for an ASCII text,
+    /// where `LineIndex` is already direct, and for a dropped text, which has its own table.
+    fn publish_line_table(&self, diagnostic_count: usize) -> Option<LineTable> {
+        let fia = self.file_info_ast.borrow();
+        let text_document = fia.text_document.as_ref()?;
+        (diagnostic_count != 0 && !text_document.index().is_ascii()).then(|| LineTable::new(text_document))
+    }
+
     pub fn update_diagnostic_filters(&mut self, session: &SessionInfo) {
         self.diagnostic_filters = session.sync_odoo.config.diagnostic_filters().iter().filter(|filter| {
             match filter.path_type {
@@ -1231,10 +1253,11 @@ impl FileInfo {
             } else {
                 self.diagnostics.values().flatten().cloned().collect()
             };
+            let line_table = self.publish_line_table(diagnostics.len());
 
             'diagnostics: for d in diagnostics {
                 //check noqa lines
-                let updated = self.update_range(d, session.sync_odoo.encoding);
+                let updated = self.update_range(d, session.sync_odoo.encoding, line_table.as_ref());
                 let updated_line = updated.range.start.line;
                 if let Some(noqa_line) = self.noqas_lines.get(&updated_line) {
                     match noqa_line {
@@ -2048,7 +2071,7 @@ mod line_table_tests {
 
     /// A dropped text keeps converting offsets and positions exactly as the text did, in every
     /// encoding: 2-, 3- and 4-byte characters, adjacent runs of different widths, CRLF line
-    /// ends, no trailing newline, columns and lines past the end.
+    /// ends, no trailing newline, offsets inside a character, columns and lines past the end.
     #[test]
     fn line_table_matches_the_text_document() {
         let texts = [
@@ -2066,8 +2089,7 @@ mod line_table_tests {
             let text_document = TextDocument::new(text.to_string(), -1);
             let table = LineTable::new(&text_document);
             let index = text_document.index();
-            let offsets = (0..=text.len() + 3).filter(|&offset| offset > text.len() || text.is_char_boundary(offset));
-            for offset in offsets {
+            for offset in 0..=text.len() + 3 {
                 for encoding in [PositionEncoding::Utf8, PositionEncoding::Utf16, PositionEncoding::Utf32] {
                     assert_eq!(
                         table.offset_to_position(offset as u32, encoding),
