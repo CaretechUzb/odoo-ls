@@ -163,7 +163,14 @@ impl PythonValidator {
                     }
                 }
             } else {
-                self.file_info.as_ref().unwrap().borrow_mut().publish_diagnostics(session);
+                let mut file_info = self.file_info.as_ref().unwrap().borrow_mut();
+                // Plain Python files: their diagnostics may leave RAM once published. Packages
+                // and modules (`__init__.py`) keep theirs: validating them again means reloading
+                // the package.
+                if matches!(symbol, SymbolKey::File(_)) {
+                    file_info.set_diagnostics_evictable();
+                }
+                file_info.publish_diagnostics(session);
             }
             if let SymbolKey::Module(m) = symbol {
                 let manifest_path = Path::new(&session.st()[m].path).join("__manifest__.py");

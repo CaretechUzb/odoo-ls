@@ -553,11 +553,13 @@ pub fn disable(session: &mut SessionInfo, reason: &str) {
     session.sync_odoo.graph_index = None;
     session.sync_odoo.graph_recorder = None;
     session.sync_odoo.graph_unavailable = Some(reason.to_string());
+    crate::core::diagnostics_store::on_database_lost(session);
 }
 
 /// Hook at the start of `SyncOdoo::init`: open the index (once per `SyncOdoo`) or clear it,
 /// then hand it to its writer thread for the initial build.
 pub fn on_init(session: &mut SessionInfo) {
+    crate::core::diagnostics_store::reset(session);
     if session.sync_odoo.graph_unavailable.is_some() && session.sync_odoo.graph_index.is_none() {
         return; // failed once, stays off for the session
     }
@@ -593,6 +595,8 @@ pub fn on_init(session: &mut SessionInfo) {
 /// Hook at the end of `SyncOdoo::init`: the initial build has drained; once the writer thread
 /// has written everything, the index is ready.
 pub fn on_init_done(session: &mut SessionInfo) {
+    let store = &session.sync_odoo.diagnostics_store;
+    info!("Diagnostics out of RAM: {} files stored, {} loaded back, {} validated again", store.evictions, store.loads, store.revalidations);
     let (units, files_validated, files_arch_evaluated) = session.sync_odoo.graph_recorder.as_ref()
         .map(|r| (r.units_written, r.files_validated, r.files_arch_evaluated)).unwrap_or_default();
     let Some(graph) = session.sync_odoo.graph_index.as_mut() else { return };

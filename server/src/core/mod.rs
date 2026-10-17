@@ -5,6 +5,7 @@ pub mod csv_arch_builder;
 pub mod csv_validation;
 pub mod data_hooks;
 pub mod diagnostics;
+pub mod diagnostics_store;
 pub mod evaluation;
 pub mod evaluation_context;
 pub mod evaluation_utils;

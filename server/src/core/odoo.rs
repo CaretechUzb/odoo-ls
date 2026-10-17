@@ -5,6 +5,7 @@ use crate::core::diagnostics::{create_diagnostic, DiagnosticCode};
 use crate::core::entry_point::EntryPointType;
 use crate::core::file_mgr::{AstKind, PreloadedFile};
 use crate::core::graph_index::GraphIndex;
+use crate::core::diagnostics_store::{self, DiagnosticsStore};
 use crate::core::graph_recorder::{self, GraphRecorder};
 use crate::core::js_module_scope;
 use crate::core::module_load_order::sort_by_load_order;
@@ -206,6 +207,7 @@ pub struct SyncOdoo {
     pub graph_recorder: Option<GraphRecorder>,
     pub graph_unavailable: Option<String>, // why the graph index is off for this session
     pub graph_dir: Option<PathBuf>, // overrides the graph index directory (tests)
+    pub diagnostics_store: DiagnosticsStore, // diagnostics that left RAM, see diagnostics_store
     pub typeshed_weak_cache: TypeshedWeakReferences, //cache of weak references to important typeshed symbols, to avoid having to look for them in the graph for each evaluation
     pub deferred_subfunc_invalidation: Option<FifoWeakHashSet<SourceFileKey>>, // None = eager (default)
     languages_by_source: WeakMap<SourceFileKey, HashSet<String>>,
@@ -271,6 +273,7 @@ impl SyncOdoo {
             graph_recorder: None,
             graph_unavailable: None,
             graph_dir: None,
+            diagnostics_store: DiagnosticsStore::default(),
             typeshed_weak_cache: TypeshedWeakReferences::new(),
             languages_by_source: WeakMap::new(),
             language_dependents: WeakSet::new(),
@@ -2388,6 +2391,10 @@ impl Odoo {
             session.log_message(MessageType::INFO, format!("File Change Event: {}, version {}", path, version));
             let (file_updated, file_info) = session.sync_odoo.get_file_mgr().borrow_mut().update_file_info(session, path, content, Some(version), false);
             file_info.borrow_mut().publish_diagnostics(session); //To push potential syntax errors or refresh previous one
+            if session.sync_odoo.state_init != InitState::NOT_READY {
+                // did_open of a file whose evicted diagnostics cannot be read: validate it again
+                diagnostics_store::revalidate_pending(session);
+            }
             return (!file_info.borrow().opened || version >= 0, file_updated);
         }
         (false, false)

@@ -18,6 +18,11 @@
 //!
 //! Edges are owned by the validated unit (a file or a function node) that produced them, so a
 //! unit's edges can be replaced without touching the edges of other units of the same file.
+//!
+//! The same database keeps the published diagnostics of files that left RAM
+//! (`diagnostics(file, source, payload)`, one serde JSON payload per diagnostic source, see
+//! `diagnostics_store`). During the initial build their reads go through the writer queue too,
+//! so they see every write queued before them.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -98,6 +103,12 @@ CREATE INDEX IF NOT EXISTS edges_model_name_kind ON edges(dst_model, dst_name, k
 CREATE INDEX IF NOT EXISTS edges_model_parent_kind ON edges(dst_model_parent, kind) WHERE dst_model_parent IS NOT NULL;
 CREATE INDEX IF NOT EXISTS nodes_model ON nodes(model);
 CREATE INDEX IF NOT EXISTS nodes_file ON nodes(file);
+CREATE TABLE IF NOT EXISTS diagnostics(
+    file INTEGER NOT NULL,
+    source INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY(file, source)
+) WITHOUT ROWID;
 ";
 
 /// `flags` bit of a CALL edge for `super().name()` inside a method `name` of the same Odoo
@@ -159,6 +170,10 @@ enum WriteOp {
     /// Delete the edges of `owner` of `delete_kinds`, then insert `rows`.
     Edges { owner: i64, delete_kinds: Vec<i64>, rows: Vec<EdgeRow> },
     DeleteFile { file: i64 },
+    /// Insert or replace the diagnostics of `file`, one row per source.
+    Diagnostics { file: i64, rows: Vec<(i64, String)> },
+    /// Read the diagnostics rows of `file` and send them back on `reply`.
+    ReadDiagnostics { file: i64, reply: SyncSender<Result<Vec<(i64, String)>, String>> },
 }
 
 struct WriterDone {
@@ -306,7 +321,7 @@ impl GraphIndex {
     pub fn clear(&mut self) -> Result<(), String> {
         self.join_writer()?;
         self.flush()?;
-        self.conn().execute_batch("DELETE FROM edges; DELETE FROM nodes; DELETE FROM files;").map_err(sql_err)?;
+        self.conn().execute_batch("DELETE FROM edges; DELETE FROM nodes; DELETE FROM files; DELETE FROM diagnostics;").map_err(sql_err)?;
         self.file_ids.clear();
         self.sym_cache.clear();
         self.file_syms.clear();
@@ -588,6 +603,37 @@ impl GraphIndex {
         Ok(())
     }
 
+    /// Store the diagnostics of the file at `path`: one `(source, payload)` row per source,
+    /// replacing the rows of the same sources.
+    pub fn put_diagnostics(&mut self, path: &str, rows: Vec<(i64, String)>) -> Result<(), String> {
+        let file = self.file_id(path)?;
+        if self.writer.is_some() {
+            return self.send(WriteOp::Diagnostics { file, rows });
+        }
+        self.begin_write()?;
+        write_diagnostics(self.conn(), file, &rows)?;
+        self.end_write()
+    }
+
+    /// The diagnostics rows `(source, payload)` stored for the file at `path`.
+    pub fn get_diagnostics(&mut self, path: &str) -> Result<Vec<(i64, String)>, String> {
+        let Some(file) = self.existing_file_id(path)? else {
+            return Ok(vec![]);
+        };
+        if self.writer.is_some() {
+            let (reply, answer) = sync_channel(1);
+            self.send(WriteOp::ReadDiagnostics { file, reply })?;
+            return match answer.recv() {
+                Ok(rows) => rows,
+                Err(_) => {
+                    self.join_writer()?;
+                    Err("graph index writer stopped".to_string())
+                },
+            };
+        }
+        read_diagnostics(self.conn(), file)
+    }
+
     fn read_node(r: &rusqlite::Row, offset: usize) -> rusqlite::Result<NodeRow> {
         Ok(NodeRow {
             id: r.get(offset)?,
@@ -760,11 +806,26 @@ fn delete_file_rows(conn: &Connection, file: i64) -> Result<(), String> {
         "DELETE FROM edges WHERE dst IN (SELECT id FROM nodes WHERE file = ?1)",
         "DELETE FROM edges WHERE src IN (SELECT id FROM nodes WHERE file = ?1)",
         "DELETE FROM nodes WHERE file = ?1",
+        "DELETE FROM diagnostics WHERE file = ?1",
         "DELETE FROM files WHERE id = ?1",
     ] {
         conn.prepare_cached(sql).map_err(sql_err)?.execute(params![file]).map_err(sql_err)?;
     }
     Ok(())
+}
+
+fn write_diagnostics(conn: &Connection, file: i64, rows: &[(i64, String)]) -> Result<(), String> {
+    let mut stmt = conn.prepare_cached("INSERT OR REPLACE INTO diagnostics(file, source, payload) VALUES (?1, ?2, ?3)").map_err(sql_err)?;
+    for (source, payload) in rows {
+        stmt.execute(params![file, source, payload]).map_err(sql_err)?;
+    }
+    Ok(())
+}
+
+fn read_diagnostics(conn: &Connection, file: i64) -> Result<Vec<(i64, String)>, String> {
+    let mut stmt = conn.prepare_cached("SELECT source, payload FROM diagnostics WHERE file = ?1").map_err(sql_err)?;
+    let rows = stmt.query_map(params![file], |r| Ok((r.get(0)?, r.get(1)?))).map_err(sql_err)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(sql_err)
 }
 
 fn apply_write(conn: &Connection, op: WriteOp) -> Result<(), String> {
@@ -792,6 +853,11 @@ fn apply_write(conn: &Connection, op: WriteOp) -> Result<(), String> {
         },
         WriteOp::Edges { owner, delete_kinds, rows } => write_edges(conn, owner, &delete_kinds, &rows)?,
         WriteOp::DeleteFile { file } => delete_file_rows(conn, file)?,
+        WriteOp::Diagnostics { file, rows } => write_diagnostics(conn, file, &rows)?,
+        WriteOp::ReadDiagnostics { file, reply } => {
+            // A failed read is the reader's error; the writer goes on.
+            let _ = reply.send(read_diagnostics(conn, file));
+        },
     }
     Ok(())
 }

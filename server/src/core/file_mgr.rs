@@ -19,6 +19,7 @@ use std::{fs};
 use crate::utils::{HashMap, HashSet};
 use crate::core::{config::{DiagnosticFilter, DiagnosticFilterPathType}, js_arch_builder, js_utils};
 use crate::core::diagnostics::{create_diagnostic, DiagnosticCode, DiagnosticSetting};
+use crate::core::diagnostics_store;
 use crate::core::text_document::TextDocument;
 use crate::features::node_index_ast::IndexedModule;
 use crate::core::symbols::symbol_keys::SourceFileKey;
@@ -500,6 +501,14 @@ pub struct FileInfo {
     need_push: bool,
     pub file_info_ast: Rc<RefCell<FileInfoAst>>,
     diagnostics: HashMap<DiagnosticSource, Vec<Diagnostic>>,
+    /// Bit per `DiagnosticSource` whose diagnostics are in the graph index database, not in
+    /// `diagnostics` (see `diagnostics_store`). Their entry stays in the map, empty, so that the
+    /// published order (the iteration order of the map) does not change. Anything added to an
+    /// evicted source in the meantime follows the stored diagnostics.
+    evicted_diagnostics: u32,
+    /// The file's validation has published its diagnostics: from then on every publish moves them
+    /// out of RAM unless the file is opened. Reset when the diagnostics are cleared.
+    diagnostics_evictable: bool,
     pub noqas_blocs: HashMap<u32, NoqaInfo>,
     noqas_lines: HashMap<u32, NoqaInfo>,
     diagnostic_filters: Vec<DiagnosticFilter>,
@@ -522,6 +531,8 @@ impl FileInfo {
                 line_table: None,
             })),
             diagnostics: HashMap::default(),
+            evicted_diagnostics: 0,
+            diagnostics_evictable: false,
             noqas_blocs: HashMap::default(),
             noqas_lines: HashMap::default(),
             diagnostic_filters: Vec::new(),
@@ -916,7 +927,93 @@ impl FileInfo {
 
     pub fn replace_diagnostics(&mut self, step: DiagnosticSource, diagnostics: Vec<Diagnostic>) {
         self.need_push = true;
+        self.evicted_diagnostics &= !Self::source_bit(step);
         self.diagnostics.insert(step, diagnostics);
+    }
+
+    fn source_bit(source: DiagnosticSource) -> u32 {
+        1 << (source as u32)
+    }
+
+    /// Whether some diagnostics of the file are in the graph index database.
+    pub fn has_evicted_diagnostics(&self) -> bool {
+        self.evicted_diagnostics != 0
+    }
+
+    /// Drop the diagnostics, evicted ones included, without publishing (they are recomputed).
+    pub fn forget_diagnostics(&mut self) {
+        self.diagnostics.clear();
+        self.evicted_diagnostics = 0;
+        self.diagnostics_evictable = false;
+    }
+
+    /// The file's validation is done: its diagnostics may leave RAM after their publish.
+    pub fn set_diagnostics_evictable(&mut self) {
+        self.diagnostics_evictable = true;
+    }
+
+    /// Bring the evicted diagnostics back into RAM. False if they cannot be read: the file then
+    /// waits for a new validation (`diagnostics_store::request_revalidation`).
+    fn load_evicted_diagnostics(&mut self, session: &mut SessionInfo) -> bool {
+        let Some(rows) = diagnostics_store::load(session, &self.uri) else { return false };
+        let mut loaded: Vec<(DiagnosticSource, Vec<Diagnostic>)> = vec![];
+        for &source in self.diagnostics.keys() {
+            if self.evicted_diagnostics & Self::source_bit(source) == 0 {
+                continue;
+            }
+            let Some((_, payload)) = rows.iter().find(|(s, _)| *s == source as i64) else {
+                error!("Diagnostics of {} for {:?} missing from the graph index", self.uri, source);
+                return false;
+            };
+            match serde_json::from_str::<Vec<Diagnostic>>(payload) {
+                Ok(diagnostics) => loaded.push((source, diagnostics)),
+                Err(e) => {
+                    error!("Diagnostics of {} for {:?} unreadable in the graph index: {}", self.uri, source, e);
+                    return false;
+                },
+            }
+        }
+        for (source, mut diagnostics) in loaded {
+            let added_since = self.diagnostics.get_mut(&source).map(std::mem::take).unwrap_or_default();
+            diagnostics.extend(added_since);
+            self.diagnostics.insert(source, diagnostics);
+        }
+        self.evicted_diagnostics = 0;
+        true
+    }
+
+    /// tsserver diagnostics stay in RAM: no validation of the file recomputes them (R9).
+    fn can_evict_source(source: DiagnosticSource) -> bool {
+        !matches!(source, DiagnosticSource::JS_TSSERVER_SYNTAX | DiagnosticSource::JS_TSSERVER_SEMANTIC | DiagnosticSource::JS_TSSERVER_SUGGESTION)
+    }
+
+    /// Move the non-empty diagnostics to the graph index database (see `diagnostics_store`).
+    fn evict_diagnostics(&mut self, session: &mut SessionInfo) {
+        if !diagnostics_store::can_evict(session) {
+            return;
+        }
+        let mut rows = vec![];
+        for (&source, diagnostics) in self.diagnostics.iter() {
+            if diagnostics.is_empty() || !Self::can_evict_source(source) {
+                continue;
+            }
+            match serde_json::to_string(diagnostics) {
+                Ok(payload) => rows.push((source as i64, payload)),
+                Err(e) => {
+                    error!("Cannot serialize the diagnostics of {}: {}", self.uri, e);
+                    return;
+                },
+            }
+        }
+        if rows.is_empty() || !diagnostics_store::evict(session, &self.uri, rows) {
+            return;
+        }
+        for (&source, diagnostics) in self.diagnostics.iter_mut() {
+            if !diagnostics.is_empty() && Self::can_evict_source(source) {
+                *diagnostics = Vec::new();
+                self.evicted_diagnostics |= Self::source_bit(source);
+            }
+        }
     }
 
     pub fn update_validation_diagnostics(&mut self, diagnostics: HashMap<DiagnosticSource, Vec<Diagnostic>>) {
@@ -928,7 +1025,7 @@ impl FileInfo {
 
     pub fn clear_diagnostics(&mut self) {
         self.need_push = true;
-        self.diagnostics.clear();
+        self.forget_diagnostics();
     }
 
     fn update_range(&self, mut diagnostic: Diagnostic, encoding: PositionEncoding) -> Diagnostic {
@@ -982,6 +1079,12 @@ impl FileInfo {
     }
 
     pub fn publish_diagnostics(&mut self, session: &mut SessionInfo) {
+        // Evicted diagnostics are needed to publish, and opened files keep theirs in RAM.
+        if self.evicted_diagnostics != 0 && (self.need_push || self.opened)
+            && !self.load_evicted_diagnostics(session) {
+                diagnostics_store::request_revalidation(session, &self.uri);
+                return;
+            }
         if self.need_push {
             let mut all_diagnostics = Vec::new();
 
@@ -1060,6 +1163,9 @@ impl FileInfo {
                 version: self.version,
             });
             self.need_push = false;
+        }
+        if self.diagnostics_evictable && !self.opened {
+            self.evict_diagnostics(session);
         }
     }
 
