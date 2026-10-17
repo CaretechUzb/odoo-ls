@@ -416,7 +416,7 @@ impl PythonValidator {
                                 .and_then(|field_type_var| session.st().evaluations(*field_type_var))
                                 .and_then(|evals| evals.first().cloned())
                                 .and_then(|eval| eval.value.clone())
-                                .and_then(|value| value.as_string_literal().map(|s| s.value.to_string())) else {
+                                .and_then(|value| value.as_str().map(|s| s.to_string())) else {
                                 break 'related_check;
                             };
                             let found_same_type_match = syms.iter().any(|&sym| {
@@ -435,7 +435,7 @@ impl PythonValidator {
                                         .and_then(|field_type_var| session.st().evaluations(*field_type_var))
                                         .and_then(|evals| evals.first().cloned())
                                         .and_then(|eval| eval.value.clone())
-                                        .map(|value| value.as_string_literal().is_some_and(|s| s.value.to_str() == field_type))
+                                        .map(|value| value.as_str().is_some_and(|s| s == field_type))
                                         .unwrap_or(false)
                                 })
                             });
@@ -650,21 +650,21 @@ impl PythonValidator {
                 if let Some(inherit_value) = inherit_value {
                     match inherit_value {
                         EvaluationValue::CONSTANT(c) => {
-                            if let Expr::StringLiteral(s) = c.as_ref() {
-                                self._check_module_dependency(session, class, s.value.to_str(), &s.range());
+                            if let Some(s) = c.as_str() {
+                                self._check_module_dependency(session, class, s, &c.range);
                             }
                         },
                         EvaluationValue::LIST(l) => {
-                            for e in l {
-                                if let Expr::StringLiteral(s) = e {
-                                    self._check_module_dependency(session, class, s.value.to_str(), &s.range());
+                            for e in l.iter() {
+                                if let Some(s) = e.as_str() {
+                                    self._check_module_dependency(session, class, s, &e.range);
                                 }
                             }
                         },
                         EvaluationValue::TUPLE(l) => {
-                            for e in l {
-                                if let Expr::StringLiteral(s) = e {
-                                    self._check_module_dependency(session, class, s.value.to_str(), &s.range());
+                            for e in l.iter() {
+                                if let Some(s) = e.as_str() {
+                                    self._check_module_dependency(session, class, s, &e.range);
                                 }
                             }
                         },
@@ -728,8 +728,8 @@ impl PythonValidator {
                     match inherits_value {
                         EvaluationValue::DICT(d) => {
                             for (key, _value) in d.iter() {
-                                if let Expr::StringLiteral(s) = key {
-                                    self._check_module_dependency(session, class, s.value.to_str(), &s.range());
+                                if let Some(s) = key.as_str() {
+                                    self._check_module_dependency(session, class, s, &key.range);
                                 }
                             }
                         },

@@ -190,14 +190,14 @@ impl GotoUtils {
         let mut index = 0;
         while index < evaluations.len() {
             let eval = &evaluations[index];
-            if let Some((string_val, string_range)) = eval.value.as_ref().and_then(EvaluationValue::as_string_literal).map(|expr| (expr.value.to_str(), expr.range)) {
+            if let Some((string_val, string_range)) = eval.value.as_deref().and_then(EvaluationValue::as_string_literal).and_then(|literal| Some((literal.as_str()?, literal.range))) {
                 if let Some(resolution) = FeaturesUtils::resolve_string_symbols(session, file_symbol, &file_info.borrow().uri, string_val, string_range, call_expr.as_ref(), SegmentPick::Cursor(offset)) {
                     GotoUtils::push_string_sources(session, resolution, file_symbol, string_range, &mut definition_sources);
                 }
                 index += 1;
                 continue;
             }
-            if matches!(eval.value, Some(EvaluationValue::CONSTANT(_))) {
+            if matches!(eval.value.as_deref(), Some(EvaluationValue::CONSTANT(_))) {
                 // Skip go to definition on literals
                 index += 1;
                 continue;

@@ -82,8 +82,8 @@ fn test_imports(odoo: &SyncOdoo) {
     assert!(st.evaluations(st.get_symbol(data_dir, (&[], &["CONSTANT_1"]), u32::MAX)[0]).as_ref().unwrap()[0].value.is_none());
     assert!(st.evaluations(st.get_symbol(data_dir, (&[], &["CONSTANT_2"]), u32::MAX)[0]).as_ref().unwrap().len() == 1);
     assert!(st.evaluations(st.get_symbol(data_dir, (&[], &["CONSTANT_2"]), u32::MAX)[0]).as_ref().unwrap()[0].value.is_some());
-    assert!(st.evaluations(st.get_symbol(data_dir, (&[], &["CONSTANT_2"]), u32::MAX)[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().is_number_literal_expr());
-    assert!(st.evaluations(st.get_symbol(data_dir, (&[], &["CONSTANT_2"]), u32::MAX)[0]).as_ref().unwrap()[0].value.as_ref().unwrap().as_constant().as_number_literal_expr().unwrap().value.as_int().unwrap().as_i32().unwrap() == 22);
+    assert!(st.evaluations(st.get_symbol(data_dir, (&[], &["CONSTANT_2"]), u32::MAX)[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_number().is_some());
+    assert!(st.evaluations(st.get_symbol(data_dir, (&[], &["CONSTANT_2"]), u32::MAX)[0]).as_ref().unwrap()[0].value.as_deref().unwrap().as_constant().as_number().unwrap().as_int().unwrap().as_i32().unwrap() == 22);
     assert!(st.evaluations(st.get_symbol(data_dir, (&[], &["CONSTANT_2"]), 26)[0]).as_ref().unwrap().len() == 1);
     assert!(st.evaluations(st.get_symbol(data_dir, (&[], &["CONSTANT_2"]), 26)[0]).as_ref().unwrap()[0].value.is_none());
     assert!(!st.evaluations(st.get_symbol(data_dir, (&[], &["CONSTANT_2"]), 26)[0]).as_ref().unwrap()[0].symbol.get_weak().weak.is_expired(st));

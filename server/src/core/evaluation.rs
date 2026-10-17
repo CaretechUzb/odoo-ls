@@ -26,13 +26,69 @@ use super::file_mgr::FileMgr;
 use super::symbols::function_symbol::{Argument, ArgumentType};
 use super::symbols::symbol_mgr::SectionIndex;
 
+/// The value of a literal expression (`"a"`, `b"a"`, `1`, `1.5`, `True`, `None`, `...`).
+/// Evaluations keep this instead of a clone of the literal's AST node.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LiteralValue {
+    Str(Box<str>),
+    Bytes(Box<[u8]>),
+    Number(Number),
+    Bool(bool),
+    None,
+    Ellipsis,
+}
+
+/// A literal value and the range of the literal expression in its source file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Literal {
+    pub value: LiteralValue,
+    pub range: TextRange,
+}
+
+impl Literal {
+    /// None if `expr` is not a literal expression (see `Expr::is_literal_expr`).
+    pub fn from_expr(expr: &Expr) -> Option<Literal> {
+        let value = match expr {
+            Expr::StringLiteral(s) => LiteralValue::Str(s.value.to_str().into()),
+            Expr::BytesLiteral(b) => LiteralValue::Bytes(b.value.bytes().collect()),
+            Expr::NumberLiteral(n) => LiteralValue::Number(n.value.clone()),
+            Expr::BooleanLiteral(b) => LiteralValue::Bool(b.value),
+            Expr::NoneLiteral(_) => LiteralValue::None,
+            Expr::EllipsisLiteral(_) => LiteralValue::Ellipsis,
+            _ => return None,
+        };
+        Some(Literal { value, range: expr.range() })
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        match &self.value {
+            LiteralValue::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self.value {
+            LiteralValue::Bool(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    pub fn as_number(&self) -> Option<&Number> {
+        match &self.value {
+            LiteralValue::Number(n) => Some(n),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvaluationValue {
     ANY(), //we don't know what it is, so it can be everything !
-    CONSTANT(Box<ruff_python_ast::Expr>), //expr is a literal
-    DICT(Vec<(ruff_python_ast::Expr, ruff_python_ast::Expr)>), //expr is a literal
-    LIST(Vec<ruff_python_ast::Expr>), //expr is a literal
-    TUPLE(Vec<ruff_python_ast::Expr>) //expr is a literal
+    CONSTANT(Literal),
+    DICT(Box<[(Literal, Literal)]>),
+    LIST(Box<[Literal]>),
+    TUPLE(Box<[Literal]>)
 }
 
 impl EvaluationValue {
@@ -40,50 +96,49 @@ impl EvaluationValue {
         matches!(self, EvaluationValue::ANY())
     }
 
-    pub fn as_constant(&self) -> &ruff_python_ast::Expr {
+    pub fn as_constant(&self) -> &Literal {
         match self {
-            EvaluationValue::CONSTANT(e) => e,
+            EvaluationValue::CONSTANT(c) => c,
             _ => panic!("Not a constant")
         }
     }
 
-    /// Returns the inner string literal if this is a `CONSTANT(Expr::StringLiteral(_))`.
-    pub fn as_string_literal(&self) -> Option<&ruff_python_ast::ExprStringLiteral> {
+    /// Returns the literal if this is a string `CONSTANT`.
+    pub fn as_string_literal(&self) -> Option<&Literal> {
         match self {
-            EvaluationValue::CONSTANT(e) => match e.as_ref() {
-                Expr::StringLiteral(s) => Some(s),
-                _ => None,
-            },
+            EvaluationValue::CONSTANT(c) if c.as_str().is_some() => Some(c),
             _ => None,
         }
     }
 
-    /// Returns the boolean value if this is a `CONSTANT(Expr::BooleanLiteral(_))`.
+    /// Returns the string if this is a string `CONSTANT`.
+    pub fn as_str(&self) -> Option<&str> {
+        self.as_string_literal().and_then(Literal::as_str)
+    }
+
+    /// Returns the boolean value if this is a boolean `CONSTANT`.
     pub fn as_bool_literal(&self) -> Option<bool> {
         match self {
-            EvaluationValue::CONSTANT(e) => match e.as_ref() {
-                Expr::BooleanLiteral(b) => Some(b.value),
-                _ => None,
-            },
+            EvaluationValue::CONSTANT(c) => c.as_bool(),
             _ => None,
         }
     }
 
-    pub fn as_dict(&self) -> &[(ruff_python_ast::Expr, ruff_python_ast::Expr)] {
+    pub fn as_dict(&self) -> &[(Literal, Literal)] {
         match self {
             EvaluationValue::DICT(d) => d,
             _ => panic!("Not a dict")
         }
     }
 
-    pub fn as_list(&self) -> &[ruff_python_ast::Expr] {
+    pub fn as_list(&self) -> &[Literal] {
         match self {
             EvaluationValue::LIST(l) => l,
             _ => panic!("Not a list")
         }
     }
 
-    pub fn as_tuple(&self) -> &[ruff_python_ast::Expr] {
+    pub fn as_tuple(&self) -> &[Literal] {
         match self {
             EvaluationValue::TUPLE(t) => t,
             _ => panic!("Not a tuple")
@@ -95,7 +150,8 @@ impl EvaluationValue {
 pub struct Evaluation {
     //symbol lead to type evaluation, and value/range hold the evaluated value in case of a 'constant' value, like in "variable = 5".
     pub symbol: EvaluationSymbol,
-    pub value: Option<EvaluationValue>, //
+    /// Boxed: few evaluations hold a value, so this keeps every `Evaluation` 24 bytes smaller.
+    pub value: Option<Box<EvaluationValue>>,
     pub range: Option<TextRange>, //evaluated part
 }
 
@@ -285,7 +341,7 @@ fn resolve_super_class_args(
 
 impl Evaluation {
 
-    pub fn new_list(odoo: &mut SyncOdoo, values: Option<Vec<Expr>>, range: TextRange) -> Evaluation {
+    pub fn new_list(odoo: &mut SyncOdoo, values: Option<Vec<Literal>>, range: TextRange) -> Evaluation {
         Evaluation {
             symbol: EvaluationSymbol {
                 sym: EvaluationSymbolPtr::WEAK(EvaluationSymbolWeak{
@@ -296,12 +352,12 @@ impl Evaluation {
                 }),
                 get_symbol_hook: None
             },
-            value: values.map(EvaluationValue::LIST),
+            value: values.map(|values| Box::new(EvaluationValue::LIST(values.into_boxed_slice()))),
             range: Some(range),
         }
     }
 
-    pub fn new_tuple(odoo: &mut SyncOdoo, values: Option<Vec<Expr>>, range: TextRange) -> Evaluation {
+    pub fn new_tuple(odoo: &mut SyncOdoo, values: Option<Vec<Literal>>, range: TextRange) -> Evaluation {
         Evaluation {
             symbol: EvaluationSymbol {
                 sym: EvaluationSymbolPtr::WEAK(EvaluationSymbolWeak{
@@ -312,12 +368,12 @@ impl Evaluation {
                 }),
                 get_symbol_hook: None
             },
-            value: values.map(EvaluationValue::TUPLE),
+            value: values.map(|values| Box::new(EvaluationValue::TUPLE(values.into_boxed_slice()))),
             range: Some(range)
         }
     }
 
-    pub fn new_dict(odoo: &mut SyncOdoo, values: Option<Vec<(Expr, Expr)>>, range: TextRange) -> Evaluation {
+    pub fn new_dict(odoo: &mut SyncOdoo, values: Option<Vec<(Literal, Literal)>>, range: TextRange) -> Evaluation {
         Evaluation {
             symbol: EvaluationSymbol {
                 sym: EvaluationSymbolPtr::WEAK(EvaluationSymbolWeak{
@@ -328,7 +384,7 @@ impl Evaluation {
                 }),
                 get_symbol_hook: None
             },
-            value: values.map(EvaluationValue::DICT),
+            value: values.map(|values| Box::new(EvaluationValue::DICT(values.into_boxed_slice()))),
             range: Some(range)
         }
     }
@@ -360,8 +416,10 @@ impl Evaluation {
         }
     }
 
-    pub fn new_constant(odoo: &mut SyncOdoo, values: Expr, range: TextRange) -> Evaluation {
-        let symbol = match &values {
+    /// `values` must be a literal expression (see `Literal::from_expr`).
+    pub fn new_constant(odoo: &mut SyncOdoo, values: &Expr, range: TextRange) -> Evaluation {
+        let literal = Literal::from_expr(values).map(|literal| Box::new(EvaluationValue::CONSTANT(literal)));
+        let symbol = match values {
             Expr::StringLiteral(_s) => {
                 odoo.get_ts_string()
             },
@@ -384,7 +442,7 @@ impl Evaluation {
             Expr::NoneLiteral(_n) => {
                 let mut eval = Evaluation::new_none();
                 eval.range = Some(range);
-                eval.value = Some(EvaluationValue::CONSTANT(Box::new(values)));
+                eval.value = literal;
                 return eval
             }
             _ => {
@@ -401,7 +459,7 @@ impl Evaluation {
                 }),
                 get_symbol_hook: None
             },
-            value: Some(EvaluationValue::CONSTANT(Box::new(values))),
+            value: literal,
             range: Some(range)
         }
     }
@@ -476,7 +534,7 @@ impl Evaluation {
 
     pub fn follow_ref_and_get_value(&self, session: &mut SessionInfo, context: Option<&Context>, diagnostics: &mut Vec<Diagnostic>) -> Option<EvaluationValue> {
         if let Some(value) = &self.value {
-            return Some(value.clone());
+            return Some((**value).clone());
         }
         let eval_symbol = self.symbol.get_symbol(session, None, diagnostics, None);
         if eval_symbol.is_expired_if_weak(session.st()) {
@@ -489,7 +547,7 @@ impl Evaluation {
         let eval_sym = w.weak.upgrade(session.st())?;
         let evals = session.st().evaluations(eval_sym)?;
         if evals.len() == 1 {
-            return evals[0].value.clone();
+            return evals[0].value.as_deref().cloned();
         };
         None
     }
@@ -604,9 +662,8 @@ impl Evaluation {
             let eval = &value.evaluations[0];
             let v = eval.follow_ref_and_get_value(session, None, diagnostics);
             if let Some(v) = v
-                && let EvaluationValue::CONSTANT(v) = v
-                    && let Expr::StringLiteral(s) = *v {
-                        return (Some(s.value.to_string()), value.diagnostics);
+                && let Some(s) = v.as_string_literal().and_then(Literal::as_str) {
+                        return (Some(s.to_string()), value.diagnostics);
                     }
         }
         (None, value.diagnostics)
@@ -629,9 +686,8 @@ impl Evaluation {
             let eval = &value.evaluations[0];
             let v = eval.follow_ref_and_get_value(session, None, diagnostics);
             if let Some(v) = v
-                && let EvaluationValue::CONSTANT(v) = v
-                    && let Expr::BooleanLiteral(s) = *v {
-                        return (Some(s.value), value.diagnostics);
+                && let Some(b) = v.as_bool_literal() {
+                        return (Some(b), value.diagnostics);
                     }
         }
         (None, value.diagnostics)
@@ -679,26 +735,26 @@ impl Evaluation {
 
         match ast {
             ExprOrIdent::Expr(Expr::StringLiteral(expr)) => {
-                evals.push(Evaluation::new_constant(odoo, ast.expr().clone(), expr.range));
+                evals.push(Evaluation::new_constant(odoo, ast.expr(), expr.range));
             },
             ExprOrIdent::Expr(Expr::BytesLiteral(expr)) => {
-                evals.push(Evaluation::new_constant(odoo, ast.expr().clone(), expr.range));
+                evals.push(Evaluation::new_constant(odoo, ast.expr(), expr.range));
             },
             ExprOrIdent::Expr(Expr::NumberLiteral(expr)) => {
-                evals.push(Evaluation::new_constant(odoo, ast.expr().clone(), expr.range));
+                evals.push(Evaluation::new_constant(odoo, ast.expr(), expr.range));
             },
             ExprOrIdent::Expr(Expr::BooleanLiteral(expr)) => {
-                evals.push(Evaluation::new_constant(odoo, ast.expr().clone(), expr.range));
+                evals.push(Evaluation::new_constant(odoo, ast.expr(), expr.range));
             },
             ExprOrIdent::Expr(Expr::NoneLiteral(expr)) => {
-                evals.push(Evaluation::new_constant(odoo, ast.expr().clone(), expr.range));
+                evals.push(Evaluation::new_constant(odoo, ast.expr(), expr.range));
             },
             ExprOrIdent::Expr(Expr::EllipsisLiteral(expr)) => {
-                evals.push(Evaluation::new_constant(odoo, ast.expr().clone(), expr.range));
+                evals.push(Evaluation::new_constant(odoo, ast.expr(), expr.range));
             }
             ExprOrIdent::Expr(Expr::List(expr)) => {
                 let mut all_values = true;
-                let mut values: Vec<ruff_python_ast::Expr> = Vec::new();
+                let mut values: Vec<Literal> = Vec::new();
                 for e in expr.elts.iter() {
                     if is_in_validation || session.sync_odoo.evaluation_search.is_some() {
                         let (_, diags) = Evaluation::eval_from_ast(session, e, parent, max_infer, false, required_dependencies);
@@ -706,8 +762,8 @@ impl Evaluation {
                             diagnostics.extend(diags);
                         }
                     }
-                    if all_values && e.is_literal_expr() {
-                        values.push(e.clone());
+                    if all_values && let Some(literal) = Literal::from_expr(e) {
+                        values.push(literal);
                     } else {
                         values = Vec::new();
                         all_values = false;
@@ -720,7 +776,7 @@ impl Evaluation {
             },
             ExprOrIdent::Expr(Expr::Tuple(expr)) => {
                 let mut all_values = true;
-                let mut values: Vec<ruff_python_ast::Expr> = Vec::new();
+                let mut values: Vec<Literal> = Vec::new();
                 for e in expr.elts.iter() {
                     if is_in_validation || session.sync_odoo.evaluation_search.is_some() {
                         let (_, diags) = Evaluation::eval_from_ast(session, e, parent, max_infer, false, required_dependencies);
@@ -728,8 +784,8 @@ impl Evaluation {
                             diagnostics.extend(diags);
                         }
                     }
-                    if all_values && e.is_literal_expr() {
-                        values.push(e.clone());
+                    if all_values && let Some(literal) = Literal::from_expr(e) {
+                        values.push(literal);
                     } else {
                         values = Vec::new();
                         all_values = false;
@@ -753,7 +809,7 @@ impl Evaluation {
             },
             ExprOrIdent::Expr(Expr::Dict(expr)) => {
                 let mut all_values = true;
-                let mut values: Vec<(ruff_python_ast::Expr, ruff_python_ast::Expr)> = Vec::new();
+                let mut values: Vec<(Literal, Literal)> = Vec::new();
                 for dict_item in expr.iter() {
                     let dict_value = &dict_item.value;
                     if is_in_validation || session.sync_odoo.evaluation_search.is_some() {
@@ -770,8 +826,8 @@ impl Evaluation {
                                     diagnostics.extend(diags);
                                 }
                             }
-                            if all_values && key.is_literal_expr() && dict_value.is_literal_expr() {
-                                values.push((key.clone(), dict_value.clone()));
+                            if all_values && let (Some(key), Some(dict_value)) = (Literal::from_expr(key), Literal::from_expr(dict_value)) {
+                                values.push((key, dict_value));
                             } else {
                                 all_values = false;
                                 if !is_in_validation && session.sync_odoo.evaluation_search.is_none() {
@@ -1552,19 +1608,18 @@ impl Evaluation {
                     && let Some(evaluation_search_sym) = evaluation_search.as_symbol() && weak == evaluation_search_sym {
                         found_one_reference |= record_evaluation_hit(session, parent, ast.range());
                     }
-                if let Some(value) = eval.value.as_ref()
-                    && let EvaluationValue::CONSTANT(c) = value
-                        && let Expr::StringLiteral(constant) = c.as_ref() {
+                if let Some(constant) = eval.value.as_deref().and_then(EvaluationValue::as_string_literal)
+                        && let Some(constant_str) = constant.as_str() {
                             match evaluation_search {
                                 ReferenceTarget::String(evaluation_search_string) => {
-                                    if constant.value.to_str() == evaluation_search_string {
+                                    if constant_str == evaluation_search_string {
                                         found_one_reference |= record_evaluation_hit(session, parent, ast.range());
                                     }
                                 },
                                 ReferenceTarget::Symbol(evaluation_search_sym) => {
                                     if let SymbolKey::Class(class_key) = *evaluation_search_sym
                                         && let Some(model_data) = session.st()[class_key]._model.as_ref()
-                                            && model_data.name == constant.value.to_str() {
+                                            && model_data.name == constant_str {
                                                 record_evaluation_hit(session, parent, constant.range);
                                             }
                                 }

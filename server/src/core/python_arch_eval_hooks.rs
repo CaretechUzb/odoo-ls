@@ -143,7 +143,7 @@ static arch_eval_file_hooks: LazyLock<Vec<PythonArchEvalFileHook>> = LazyLock::n
                             ((18, 1), (999, 0), (&["odoo", "orm", "models"], &["BaseModel", "ids"]))],
                         if_exist_only: true,
                         func: |odoo: &mut SyncOdoo, _entry: &Rc<RefCell<EntryPoint>>, _file_symbol: SourceFileKey, symbol: SymbolKey| {
-        let values: Vec<ruff_python_ast::Expr> = Vec::new();
+        let values = Vec::new();
         let range = odoo.symbol_table.range(symbol);
         let evaluations = vec![Evaluation::new_list(odoo, Some(values), range)];
         odoo.symbol_table.set_evaluations(symbol, evaluations);

@@ -218,14 +218,14 @@ pub fn on_evals(session: &mut SessionInfo, parent: SymbolKey, range: TextRange, 
                         dst_model: None, dst_name: None, dst_model_parent: None, flags: 0,
                     });
                 }
-            if let Some(EvaluationValue::CONSTANT(c)) = eval.value.as_ref()
-                && let Expr::StringLiteral(constant) = c.as_ref()
-                && session.sync_odoo.models.contains_key(constant.value.to_str()) {
+            if let Some(constant) = eval.value.as_deref().and_then(EvaluationValue::as_string_literal)
+                && let Some(constant_str) = constant.as_str()
+                && session.sync_odoo.models.contains_key(constant_str) {
                     edges.push(PendingEdge {
                         src: parent,
                         dst: None, kind: EDGE_MODEL_REF,
                         start: constant.range.start().to_u32(), end: constant.range.end().to_u32(),
-                        dst_model: Some(crate::oyarn!("{}", constant.value.to_str())), dst_name: None, dst_model_parent: None, flags: 0,
+                        dst_model: Some(crate::oyarn!("{}", constant_str)), dst_name: None, dst_model_parent: None, flags: 0,
                     });
                 }
         }

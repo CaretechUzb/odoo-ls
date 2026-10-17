@@ -203,7 +203,7 @@ impl PythonArchBuilder {
                                     if let Some(evals) = evaluations && evals.len() == 1 {
                                         let value = &evals[0].value;
                                         if value.is_some() {
-                                            let (nf, parse_error) = self.extract_all_symbol_eval_values(&value.as_ref());
+                                            let (nf, parse_error) = self.extract_all_symbol_eval_values(&value.as_deref());
                                             if parse_error {
                                                 warn!("error during parsing __all__ import in file {}", session.st().paths(import_symbol)[0] )
                                             }
@@ -498,9 +498,9 @@ impl PythonArchBuilder {
                         vec![]
                     }
                     EvaluationValue::CONSTANT(c) => {
-                        match &**c {
-                            Expr::StringLiteral(s) => {
-                                vec![oyarn!("{}", s.value)]
+                        match c.as_str() {
+                            Some(s) => {
+                                vec![oyarn!("{}", s)]
                             },
                             _ => {parse_error = true; vec![]}
                         }
@@ -511,9 +511,9 @@ impl PythonArchBuilder {
                     EvaluationValue::LIST(l) => {
                         let mut res = vec![];
                         for v in l.iter() {
-                            match v {
-                                Expr::StringLiteral(s) => {
-                                    res.push(oyarn!("{}", s.value));
+                            match v.as_str() {
+                                Some(s) => {
+                                    res.push(oyarn!("{}", s));
                                 }
                                 _ => {parse_error = true; }
                             }
@@ -523,9 +523,9 @@ impl PythonArchBuilder {
                     EvaluationValue::TUPLE(t) => {
                         let mut res = vec![];
                         for v in t.iter() {
-                            match v {
-                                Expr::StringLiteral(s) => {
-                                    res.push(oyarn!("{}", s.value));
+                            match v.as_str() {
+                                Some(s) => {
+                                    res.push(oyarn!("{}", s));
                                 }
                                 _ => {parse_error = true; }
                             }
@@ -582,10 +582,10 @@ impl PythonArchBuilder {
                                 // or with meta programmation like globals["var"] = __get_func().
                                 // we don't want to handle that, so just declare __all__ content
                                 // as symbols to not raise any error.
-                                if let Some(EvaluationValue::LIST(list)) = &evaluation.value {
+                                if let Some(EvaluationValue::LIST(list)) = evaluation.value.as_deref() {
                                     for item in list.iter() {
-                                        if let Expr::StringLiteral(s) = item {
-                                            self.__all_symbols_to_add.push((s.value.to_string(), evaluation.range.unwrap()));
+                                        if let Some(s) = item.as_str() {
+                                            self.__all_symbols_to_add.push((s.to_string(), evaluation.range.unwrap()));
                                         }
                                     }
                                 }
