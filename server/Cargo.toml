@@ -57,6 +57,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 nix = { version = "0.29.0", features = ["process", "signal"] }
 tikv-jemallocator = "0.6"
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
+tikv-jemalloc-sys = "0.6"
 
 [[bench]]
 name = "gungraun_bench"

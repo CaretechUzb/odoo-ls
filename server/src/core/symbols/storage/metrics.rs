@@ -35,6 +35,24 @@ pub fn log_memory_usage(label: &str) {
 #[cfg(not(all(not(debug_assertions), any(target_os = "linux", target_os = "macos"))))]
 pub fn log_memory_usage(_label: &str) {}
 
+/// Gives the pages jemalloc keeps for later allocations back to the system.
+///
+/// jemalloc returns freed pages only as later allocations go by, and without a background
+/// thread (none on macOS) an idle server keeps the peak of its last build.
+#[cfg(all(not(debug_assertions), any(target_os = "linux", target_os = "macos")))]
+pub fn release_unused_memory() {
+    // "arena.<MALLCTL_ARENAS_ALL>.purge": every arena. Neither reads nor writes a value.
+    let name = b"arena.4096.purge\0";
+    let ret = unsafe { tikv_jemalloc_sys::mallctl(name.as_ptr().cast(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), 0) };
+    if ret != 0 {
+        debug!("jemalloc purge failed: {}", ret);
+    }
+    log_memory_usage("unused pages released");
+}
+
+#[cfg(not(all(not(debug_assertions), any(target_os = "linux", target_os = "macos"))))]
+pub fn release_unused_memory() {}
+
 /// Logs memory + symbol counts once per initial-build phase (ARCH, ARCH_EVAL, VALIDATION queues
 /// drained). A phase is logged only if its queue held something during the rebuild.
 #[derive(Default)]
