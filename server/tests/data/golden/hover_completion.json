@@ -1,0 +1,449 @@
+{
+  "completion module_1/models/arch_eval_hooks_model.py:17:43 (filtered_domain field)": [
+    {
+      "label": "filtered_domain",
+      "kind": "Function",
+      "detail": "((self, domain) -> ArchEvalHooksModel)",
+      "label_detail": "ArchEvalHooksModel",
+      "sort_text": "filtered_domain"
+    }
+  ],
+  "completion module_1/models/arch_eval_hooks_model.py:21:30 (create dict key)": [
+    {
+      "label": "<lambda>",
+      "kind": "Function",
+      "detail": "((r) -> None)",
+      "label_detail": "None",
+      "sort_text": "<lambda>"
+    },
+    {
+      "label": "ArchEvalHooksModel",
+      "kind": "Class",
+      "detail": "",
+      "label_detail": "",
+      "sort_text": "ArchEvalHooksModel"
+    },
+    {
+      "label": "Command",
+      "kind": "Variable",
+      "detail": "Command",
+      "label_detail": "Command",
+      "sort_text": "Command"
+    },
+    {
+      "label": "SUPERUSER_ID",
+      "kind": "Variable",
+      "detail": "int",
+      "label_detail": "int",
+      "sort_text": "SUPERUSER_ID"
+    },
+    {
+      "label": "_",
+      "kind": "Variable",
+      "detail": "GettextAlias",
+      "label_detail": "GettextAlias",
+      "sort_text": "~_"
+    },
+    {
+      "label": "_lt",
+      "kind": "Variable",
+      "detail": "_lt",
+      "label_detail": "_lt",
+      "sort_text": "~_lt"
+    },
+    {
+      "label": "api",
+      "kind": "Variable",
+      "detail": "File",
+      "label_detail": "File",
+      "sort_text": "api"
+    },
+    {
+      "label": "browse_res",
+      "kind": "Variable",
+      "detail": "ArchEvalHooksModel",
+      "label_detail": "ArchEvalHooksModel",
+      "sort_text": "browse_res"
+    },
+    {
+      "label": "create",
+      "kind": "Variable",
+      "detail": "ArchEvalHooksModel",
+      "label_detail": "ArchEvalHooksModel",
+      "sort_text": "create"
+    },
+    {
+      "label": "exists_res",
+      "kind": "Variable",
+      "detail": "ArchEvalHooksModel",
+      "label_detail": "ArchEvalHooksModel",
+      "sort_text": "exists_res"
+    },
+    {
+      "label": "fields",
+      "kind": "Variable",
+      "detail": "File",
+      "label_detail": "File",
+      "sort_text": "fields"
+    },
+    {
+      "label": "filtered_domain_res",
+      "kind": "Variable",
+      "detail": "ArchEvalHooksModel",
+      "label_detail": "ArchEvalHooksModel",
+      "sort_text": "filtered_domain_res"
+    },
+    {
+      "label": "filtered_res",
+      "kind": "Variable",
+      "detail": "ArchEvalHooksModel",
+      "label_detail": "ArchEvalHooksModel",
+      "sort_text": "filtered_res"
+    },
+    {
+      "label": "models",
+      "kind": "Variable",
+      "detail": "File",
+      "label_detail": "File",
+      "sort_text": "models"
+    },
+    {
+      "label": "self",
+      "kind": "Variable",
+      "detail": "ArchEvalHooksModel",
+      "label_detail": "ArchEvalHooksModel",
+      "sort_text": "self"
+    },
+    {
+      "label": "sudo_res",
+      "kind": "Variable",
+      "detail": "ArchEvalHooksModel",
+      "label_detail": "ArchEvalHooksModel",
+      "sort_text": "sudo_res"
+    },
+    {
+      "label": "tools",
+      "kind": "Variable",
+      "detail": "Module",
+      "label_detail": "Module",
+      "sort_text": "tools"
+    },
+    {
+      "label": "with_company_res",
+      "kind": "Variable",
+      "detail": "ArchEvalHooksModel",
+      "label_detail": "ArchEvalHooksModel",
+      "sort_text": "with_company_res"
+    },
+    {
+      "label": "with_context_res",
+      "kind": "Variable",
+      "detail": "ArchEvalHooksModel",
+      "label_detail": "ArchEvalHooksModel",
+      "sort_text": "with_context_res"
+    },
+    {
+      "label": "with_env_res",
+      "kind": "Variable",
+      "detail": "ArchEvalHooksModel",
+      "label_detail": "ArchEvalHooksModel",
+      "sort_text": "with_env_res"
+    },
+    {
+      "label": "with_prefetch_res",
+      "kind": "Variable",
+      "detail": "ArchEvalHooksModel",
+      "label_detail": "ArchEvalHooksModel",
+      "sort_text": "with_prefetch_res"
+    },
+    {
+      "label": "with_user_res",
+      "kind": "Variable",
+      "detail": "ArchEvalHooksModel",
+      "label_detail": "ArchEvalHooksModel",
+      "sort_text": "with_user_res"
+    }
+  ],
+  "completion module_1/models/base_test_models.py:10:60 (related= field path)": [
+    {
+      "label": "phone_code",
+      "kind": "Variable",
+      "detail": "Integer",
+      "label_detail": "Integer",
+      "sort_text": "phone_code"
+    }
+  ],
+  "completion module_1/models/base_test_models.py:19:19 (name prefix CONS)": [
+    {
+      "label": "BaseTestModel",
+      "kind": "Class",
+      "detail": "",
+      "label_detail": "",
+      "sort_text": "BaseTestModel"
+    },
+    {
+      "label": "CONSTANT_1",
+      "kind": "Variable",
+      "detail": "int",
+      "label_detail": "int",
+      "sort_text": "CONSTANT_1"
+    },
+    {
+      "label": "CONSTANT_2",
+      "kind": "Variable",
+      "detail": "int",
+      "label_detail": "int",
+      "sort_text": "CONSTANT_2"
+    },
+    {
+      "label": "_",
+      "kind": "Variable",
+      "detail": "GettextAlias",
+      "label_detail": "GettextAlias",
+      "sort_text": "~_"
+    },
+    {
+      "label": "api",
+      "kind": "Variable",
+      "detail": "File",
+      "label_detail": "File",
+      "sort_text": "api"
+    },
+    {
+      "label": "fields",
+      "kind": "Variable",
+      "detail": "File",
+      "label_detail": "File",
+      "sort_text": "fields"
+    },
+    {
+      "label": "models",
+      "kind": "Variable",
+      "detail": "File",
+      "label_detail": "File",
+      "sort_text": "models"
+    },
+    {
+      "label": "self",
+      "kind": "Variable",
+      "detail": "BaseTestModel",
+      "label_detail": "BaseTestModel",
+      "sort_text": "self"
+    },
+    {
+      "label": "tools",
+      "kind": "Variable",
+      "detail": "Module",
+      "label_detail": "Module",
+      "sort_text": "tools"
+    }
+  ],
+  "completion module_1/models/base_test_models.py:32:21 (env[] model name)": [
+    {
+      "label": "pygls.tests.base_test_model",
+      "kind": "Class",
+      "detail": null,
+      "label_detail": null,
+      "sort_text": "_pygls.tests.base_test_model"
+    }
+  ],
+  "completion module_1/models/base_test_models.py:33:25 (domain field name)": [
+    {
+      "label": "code",
+      "kind": "Variable",
+      "detail": "Char",
+      "label_detail": "Char",
+      "sort_text": "code"
+    }
+  ],
+  "completion module_1/models/base_test_models.py:79:113 (depends= nested field)": [
+    {
+      "label": "display_name",
+      "kind": "Variable",
+      "detail": "Char",
+      "label_detail": "Char",
+      "sort_text": "display_name"
+    }
+  ],
+  "completion module_1/models/base_test_models.py:85:34 (Selection method name)": [
+    {
+      "label": "_selection_state",
+      "kind": "Function",
+      "detail": "((self) -> list)",
+      "label_detail": "list",
+      "sort_text": "~_selection_state"
+    }
+  ],
+  "completion module_1/models/base_test_models.py:85:67 (group_expand method name)": [
+    {
+      "label": "_expand_states",
+      "kind": "Function",
+      "detail": "((self, states, domain) -> Any)",
+      "label_detail": "Any",
+      "sort_text": "~_expand_states"
+    }
+  ],
+  "completion module_1/models/base_test_models.py:86:43 (selection= method name)": [
+    {
+      "label": "_selection_state",
+      "kind": "Function",
+      "detail": "((self) -> list)",
+      "label_detail": "list",
+      "sort_text": "~_selection_state"
+    }
+  ],
+  "completion module_1/models/base_test_models.py:9:46 (Many2one comodel name)": [
+    {
+      "label": "res.partner",
+      "kind": "Class",
+      "detail": null,
+      "label_detail": null,
+      "sort_text": "_res.partner"
+    },
+    {
+      "label": "res.partner.bank",
+      "kind": "Class",
+      "detail": null,
+      "label_detail": null,
+      "sort_text": "_res.partner.bank"
+    },
+    {
+      "label": "res.partner.category",
+      "kind": "Class",
+      "detail": null,
+      "label_detail": null,
+      "sort_text": "_res.partner.category"
+    },
+    {
+      "label": "res.partner.industry",
+      "kind": "Class",
+      "detail": null,
+      "label_detail": null,
+      "sort_text": "_res.partner.industry"
+    },
+    {
+      "label": "res.partner.title",
+      "kind": "Class",
+      "detail": null,
+      "label_detail": null,
+      "sort_text": "_res.partner.title"
+    }
+  ],
+  "completion module_1/models/models.py:28:20 (_inherit model name)": [
+    {
+      "label": "pygls.tests.m_name",
+      "kind": "Class",
+      "detail": null,
+      "label_detail": null,
+      "sort_text": "_pygls.tests.m_name"
+    },
+    {
+      "label": "pygls.tests.m_name_2",
+      "kind": "Class",
+      "detail": null,
+      "label_detail": null,
+      "sort_text": "_pygls.tests.m_name_2"
+    }
+  ],
+  "completion module_1/models/models.py:55:15 (self. attribute prefix)": [
+    {
+      "label": "a_bool",
+      "kind": "Variable",
+      "detail": "Boolean",
+      "label_detail": "Boolean",
+      "sort_text": "a_bool"
+    }
+  ],
+  "completion module_1/models/models.py:79:22 (_inherits model name)": [
+    {
+      "label": "pygls.tests.m_name",
+      "kind": "Class",
+      "detail": null,
+      "label_detail": null,
+      "sort_text": "_pygls.tests.m_name"
+    },
+    {
+      "label": "pygls.tests.m_name_2",
+      "kind": "Class",
+      "detail": null,
+      "label_detail": null,
+      "sort_text": "_pygls.tests.m_name_2"
+    }
+  ],
+  "completion module_2/__manifest__.py:13:20 (manifest depends module name)": [],
+  "completion module_2/models/base_test_models.py:5:20 (module_2 _inherit model name)": [
+    {
+      "label": "pygls.tests.base_test_model",
+      "kind": "Class",
+      "detail": null,
+      "label_detail": null,
+      "sort_text": "_pygls.tests.base_test_model"
+    }
+  ],
+  "hover module_1/__manifest__.py:13:6 (manifest depends key)": null,
+  "hover module_1/__manifest__.py:3:7 (manifest name key)": null,
+  "hover module_1/models/arch_eval_hooks_model.py:14:35 (with_context kwarg string)": "```python  \\\n(method) def with_context(self, args, kwargs) -> ArchEvalHooksModel  \n```  \n***  \n&nbsp;with_context([context][, **overrides]) -> Model  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Returns a new version of this recordset attached to an extended  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;context.  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;The extended context is either the provided ``context`` in which  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;``overrides`` are merged or the *current* context in which  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;``overrides`` are merged e.g.::  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# current context is {'key1': True}  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;r2 = records.with_context({}, key2=True)  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# -> r2._context is {'key2': True}  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;r2 = records.with_context(key2=True)  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# -> r2._context is {'key1': True, 'key2': True}  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.. note:  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;The returned recordset has the same prefetch object as ``self``.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;",
+  "hover module_1/models/arch_eval_hooks_model.py:17:50 (domain field string)": "```python  \\\n(class) ArchEvalHooksModel  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/arch_eval_hooks_model.py:21:33 (create dict literal key)": "```python  \\\n(class) str  \n```",
+  "hover module_1/models/arch_eval_hooks_model.py:36:10 (SUPERUSER_ID)": "```python  \\\n(variable) superuser_id_res: int  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/arch_eval_hooks_model.py:38:10 (_lt call)": "```python  \\\n(variable) lt_res: _lt  \n```  \n***  \nFrom module `module_1`  \\\n&nbsp;Lazy code translation  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;Similar to GettextAlias but the translation lookup will be done only at  \\\n&nbsp;&nbsp;&nbsp;&nbsp;__str__ execution.  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;A code using translated global variables such as:  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;LABEL = _lt(\"User\")  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;def _compute_label(self):  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;context = {'lang': self.partner_id.lang}  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;self.user_label = LABEL  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;works as expected (unlike the classic GettextAlias implementation).  \\\n&nbsp;&nbsp;&nbsp;&nbsp;",
+  "hover module_1/models/arch_eval_hooks_model.py:58:8 (Selection literal list)": "```python  \\\n(variable) test_selection: Selection  \n```  \n***  \nFrom module `module_1`  \\\n&nbsp;Encapsulates an exclusive choice between different values.  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:param selection: specifies the possible values for this field.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;It is given as either a list of pairs ``(value, label)``, or a model  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;method, or a method name.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:type selection: list(tuple(str,str)) or callable or str  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:param selection_add: provides an extension of the selection in the case  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;of an overridden field. It is a list of pairs ``(value, label)`` or  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;singletons ``(value,)``, where singleton values must appear in the  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;overridden selection. The new values are inserted in an order that is  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;consistent with the overridden selection and this list::  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;selection = [('a', 'A'), ('b', 'B')]  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;selection_add = [('c', 'C'), ('b',)]  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;> result = [('a', 'A'), ('c', 'C'), ('b', 'B')]  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:type selection_add: list(tuple(str,str))  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:param ondelete: provides a fallback mechanism for any overridden  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;field with a selection_add. It is a dict that maps every option  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;from the selection_add to a fallback action.  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;This fallback action will be applied to all records whose  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;selection_add option maps to it.  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;The actions can be any of the following:  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- 'set null' -- the default, all records with this option  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;will have their selection value set to False.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- 'cascade' -- all records with this option will be  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;deleted along with the option itself.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- 'set default' -- all records with this option will be  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;set to the default of the field definition  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- 'set VALUE' -- all records with this option will be  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;set to the given value  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- <callable> -- a callable whose first and only argument will be  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;the set of records containing the specified Selection option,  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;for custom processing  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;The attribute ``selection`` is mandatory except in the case of  \\\n&nbsp;&nbsp;&nbsp;&nbsp;``related`` or extended fields.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;",
+  "hover module_1/models/arch_eval_hooks_model.py:59:8 (Reference selection=)": "```python  \\\n(variable) test_reference: Reference  \n```  \n***  \nFrom module `module_1`  \\\n&nbsp;Pseudo-relational field (no FK in database).  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;The field value is stored as a :class:`string <str>` following the pattern  \\\n&nbsp;&nbsp;&nbsp;&nbsp;``\"res_model,res_id\"`` in database.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;",
+  "hover module_1/models/arch_eval_hooks_model.py:82:30 (self.test_selection)": "```python  \\\n(variable) test_selection: str  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:10:70 (related= string)": "```python  \\\n(variable) country_id: Country  \n```  \n***  \nFrom module `base`",
+  "hover module_1/models/base_test_models.py:15:15 (self.ensure_one signature)": "```python  \\\n(method) def ensure_one(self) -> BaseTestModel  \n```  \n***  \nVerify that the current recordset holds a single record.  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:raise odoo.exceptions.ValueError: ``len(self) != 1``  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;",
+  "hover module_1/models/base_test_models.py:19:17 (CONSTANT_1 usage)": "```python  \\\n(import) CONSTANT_1: int  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:19:30 (CONSTANT_2 usage)": "```python  \\\n(import) CONSTANT_2: int  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:1:45 (imported CONSTANT_1)": "```python  \\\n(import) CONSTANT_1: int  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:23:13 (print signature)": "```python  \\\n(function) def print(values: object, sep, end, file, flush: bool) -> Any  \n```",
+  "hover module_1/models/base_test_models.py:29:7 (api.depends decorator)": "```python  \\\n(import) api: File  \n```  \n***  \nFrom module `module_1`  \n***  \nSee also: [api](<COMMUNITY_URI>/odoo/api.py#0)  \\\n",
+  "hover module_1/models/base_test_models.py:32:20 (env['res.partner'] string)": "Model in module_1: BaseTestModel  \n***  \ninherited in module_2 (require module_2)  \\\n",
+  "hover module_1/models/base_test_models.py:33:15 (self.search signature)": "```python  \\\n(method) def search(self, domain, offset, limit, order, count) -> BaseTestModel  \n```  \n***  \n&nbsp;search(domain[, offset=0][, limit=None][, order=None][, count=False])  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Searches for records based on the ``domain``  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:ref:`search domain <reference/orm/domains>`.  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:param domain: :ref:`A search domain <reference/orm/domains>`. Use an empty  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;list to match all records.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:param int offset: number of results to ignore (default: none)  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:param int limit: maximum number of records to return (default: all)  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:param str order: sort string  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:param bool count: if True, only counts and returns the number of matching records (default: False)  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:returns: at most ``limit`` records matching the search criteria  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:raise AccessError: if user is not allowed to access requested information  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;",
+  "hover module_1/models/base_test_models.py:35:26 (env.ref xml id string)": "```\n(XML record) module_1.xml_test_model\nmodel: ir.model\nfile: test_records.xml\n```",
+  "hover module_1/models/base_test_models.py:42:2 (class alias)": "```python  \\\n(variable) BaseOtherName: BaseTestModel  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:43:2 (instance)": "```python  \\\n(variable) baseInstance1: BaseTestModel  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:45:2 (bound method ref)": "```python  \\\n(variable) def ref_funcBase1(self) -> int  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:47:2 (call return)": "```python  \\\n(variable) return_funcBase2: int  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:4:18 (_name string literal)": "Model in module_1: BaseTestModel  \n***  \ninherited in module_2 (require module_2)  \\\n",
+  "hover module_1/models/base_test_models.py:4:6 (_name variable)": "```python  \\\n(variable) _name: str  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:52:2 (basic_var = 42)": "```python  \\\n(variable) basic_var: int  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:53:25 (basic_var in lambda)": "```python  \\\n(variable) basic_var: int  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:54:2 (f-string)": "```python  \\\n(variable) fstring_ref: str  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:55:2 (bool op)": "```python  \\\n(variable) boolop_ref: Any  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:56:2 (compare)": "```python  \\\n(variable) compare_ref: Any  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:57:2 (list comprehension)": "```python  \\\n(variable) listcomp_ref: list  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:58:2 (dict comprehension)": "```python  \\\n(variable) dictcomp_ref: dict  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:59:2 (list literal)": "```python  \\\n(variable) list_ref: list  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:5:6 (_inherit = [] (empty list))": "```python  \\\n(variable) _inherit: list  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:60:2 (tuple literal)": "```python  \\\n(variable) tuple_ref: tuple  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:61:2 (set literal)": "```python  \\\n(variable) set_ref: set  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:62:2 (dict literal)": "```python  \\\n(variable) dict_ref: dict  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:63:2 (call result)": "```python  \\\n(variable) call_ref: None  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:64:2 (bin op)": "```python  \\\n(variable) binop_ref: Any  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:67:30 (annotated parameter)": "```python  \\\n(parameter) field_names: Any  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:67:8 (annotated function)": "```python  \\\n(function) def annotated_param_func(field_names) -> Any  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:68:12 (annotated parameter usage)": "```python  \\\n(parameter) field_names: Any  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:6:8 (_description string constant)": "```python  \\\n(variable) _description: str  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:79:110 (depends= list string)": "```python  \\\n(class) str  \n```",
+  "hover module_1/models/base_test_models.py:85:32 (Selection method string)": "```python  \\\n(method) def _selection_state(self) -> list  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/base_test_models.py:85:6 (Selection with method)": "```python  \\\n(variable) state: Selection  \n```  \n***  \nFrom module `module_1`  \\\n&nbsp;Encapsulates an exclusive choice between different values.  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:param selection: specifies the possible values for this field.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;It is given as either a list of pairs ``(value, label)``, or a model  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;method, or a method name.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:type selection: list(tuple(str,str)) or callable or str  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:param selection_add: provides an extension of the selection in the case  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;of an overridden field. It is a list of pairs ``(value, label)`` or  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;singletons ``(value,)``, where singleton values must appear in the  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;overridden selection. The new values are inserted in an order that is  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;consistent with the overridden selection and this list::  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;selection = [('a', 'A'), ('b', 'B')]  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;selection_add = [('c', 'C'), ('b',)]  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;> result = [('a', 'A'), ('c', 'C'), ('b', 'B')]  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:type selection_add: list(tuple(str,str))  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:param ondelete: provides a fallback mechanism for any overridden  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;field with a selection_add. It is a dict that maps every option  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;from the selection_add to a fallback action.  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;This fallback action will be applied to all records whose  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;selection_add option maps to it.  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;The actions can be any of the following:  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- 'set null' -- the default, all records with this option  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;will have their selection value set to False.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- 'cascade' -- all records with this option will be  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;deleted along with the option itself.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- 'set default' -- all records with this option will be  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;set to the default of the field definition  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- 'set VALUE' -- all records with this option will be  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;set to the given value  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- <callable> -- a callable whose first and only argument will be  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;the set of records containing the specified Selection option,  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;for custom processing  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;The attribute ``selection`` is mandatory except in the case of  \\\n&nbsp;&nbsp;&nbsp;&nbsp;``related`` or extended fields.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;",
+  "hover module_1/models/base_test_models.py:86:6 (Selection with selection=)": "```python  \\\n(variable) kind: Selection  \n```  \n***  \nFrom module `module_1`  \\\n&nbsp;Encapsulates an exclusive choice between different values.  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:param selection: specifies the possible values for this field.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;It is given as either a list of pairs ``(value, label)``, or a model  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;method, or a method name.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:type selection: list(tuple(str,str)) or callable or str  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:param selection_add: provides an extension of the selection in the case  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;of an overridden field. It is a list of pairs ``(value, label)`` or  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;singletons ``(value,)``, where singleton values must appear in the  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;overridden selection. The new values are inserted in an order that is  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;consistent with the overridden selection and this list::  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;selection = [('a', 'A'), ('b', 'B')]  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;selection_add = [('c', 'C'), ('b',)]  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;> result = [('a', 'A'), ('c', 'C'), ('b', 'B')]  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:type selection_add: list(tuple(str,str))  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;:param ondelete: provides a fallback mechanism for any overridden  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;field with a selection_add. It is a dict that maps every option  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;from the selection_add to a fallback action.  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;This fallback action will be applied to all records whose  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;selection_add option maps to it.  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;The actions can be any of the following:  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- 'set null' -- the default, all records with this option  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;will have their selection value set to False.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- 'cascade' -- all records with this option will be  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;deleted along with the option itself.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- 'set default' -- all records with this option will be  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;set to the default of the field definition  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- 'set VALUE' -- all records with this option will be  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;set to the given value  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- <callable> -- a callable whose first and only argument will be  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;the set of records containing the specified Selection option,  \\\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;for custom processing  \\\n  \\\n&nbsp;&nbsp;&nbsp;&nbsp;The attribute ``selection`` is mandatory except in the case of  \\\n&nbsp;&nbsp;&nbsp;&nbsp;``related`` or extended fields.  \\\n&nbsp;&nbsp;&nbsp;&nbsp;",
+  "hover module_1/models/base_test_models.py:9:36 (Many2one comodel string)": "Model in base: Partner  \n***  \ninherited in base  \\\ninherited in test_access_rights (require test_access_rights)  \\\ninherited in test_inherit (require test_inherit)  \\\n",
+  "hover module_1/models/models.py:15:15 (_name string)": "Model in module_1: model_name  \n***  \ninherited in module_1  \\\n",
+  "hover module_1/models/models.py:16:6 (_auto = False)": "```python  \\\n(variable) _auto: bool  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/models.py:28:18 (_inherit string)": "Model in module_1: model_name  \n***  \ninherited in module_1  \\\n",
+  "hover module_1/models/models.py:3:8 (imported basic_var)": "```python  \\\n(import) basic_var: int  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/models.py:42:18 (_inherit list item)": "Model in module_1: model_name  \n***  \ninherited in module_1  \\\n",
+  "hover module_1/models/models.py:42:6 (_inherit list)": "```python  \\\n(variable) _inherit: list  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/models.py:61:14 (selection field access)": "```python  \\\n(variable) a_selection: str  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/models.py:68:6 (_register = False)": "```python  \\\n(variable) _register: bool  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/models.py:79:20 (_inherits dict key)": "Model in module_1: model_name  \n***  \ninherited in module_1  \\\n",
+  "hover module_1/models/models.py:79:45 (_inherits dict value)": "```python  \\\n(class) str  \n```",
+  "hover module_1/models/models.py:79:6 (_inherits dict)": "```python  \\\n(variable) _inherits: dict  \n```  \n***  \nFrom module `module_1`",
+  "hover module_1/models/models.py:84:16 (_inherits field access)": "```python  \\\n(variable) field_m_name_id: model_name  \n```  \n***  \nFrom module `module_1`",
+  "hover module_2/__manifest__.py:13:20 (manifest depends module_1)": "Module: module_1  \n***  \nDependencies:  \n- base",
+  "hover module_2/__manifest__.py:3:15 (manifest name value)": null,
+  "hover module_2/models/base_test_models.py:10:25 (super() call)": "```python  \\\n(method) def _compute_something(self) -> Any  \n```  \n***  \nFrom module `module_1`",
+  "hover module_2/models/base_test_models.py:13:15 (module_2 _name string)": "Model in module_2: Module2CustomModel  \n***  \n",
+  "hover module_2/models/base_test_models.py:5:18 (module_2 _inherit string)": "Model in module_1: BaseTestModel  \n***  \ninherited in module_2  \\\n"
+}
