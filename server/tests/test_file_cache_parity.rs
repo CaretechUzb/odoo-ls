@@ -60,7 +60,7 @@ fn collect_answers(file_cache: bool) -> (Vec<String>, Vec<bool>) {
     }
     for &(line, character) in REFERENCES {
         before_query(&mut session);
-        let mut locations = ReferenceFeature::get_references(&mut session, file_symbol, &file_info, line, character).unwrap_or_default();
+        let mut locations = ReferenceFeature::get_references(&mut session, file_symbol, &file_info, line, character, true).unwrap_or_default();
         locations.sort_by_key(|l| (l.uri.to_string(), l.range.start.line, l.range.start.character));
         answers.push(format!("references {line}:{character} {locations:?}"));
     }

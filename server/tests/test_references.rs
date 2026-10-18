@@ -19,7 +19,7 @@ fn test_references() {
     //1. reference of a model
     let mut references = get_references(&mut session, &test_file, Position::new(4, 29));
     //as order is not guaranteed (usage of set), check if the expected reference is somewhere in the result list.
-    assert_in_result(&mut references, "module_1/models/base_test_models.py", 3, 0);
+    assert_in_result(&mut references, "module_1/models/base_test_models.py", 3, 6); // declaration, on the class name
     assert_in_result(&mut references, "module_1/models/base_test_models.py", 4, 12);
     assert_in_result(&mut references, "module_1/models/base_test_models.py", 15, 8);
     assert_in_result(&mut references, "module_1/models/base_test_models.py", 32, 8);  // self in self.env[...]
@@ -132,8 +132,8 @@ fn test_references() {
 
     //references on a Python method invoked by <button name="..." type="object"/> inside arch
     let mut references = get_references(&mut session, &bike_wheel_py, Position::new(13, 8));
-    // declaration of the method (reported at the `def` keyword position)
-    assert_in_result(&mut references, "module_for_diagnostics/models/bike_parts_wheel.py", 13, 4);
+    // declaration of the method (reported on its name)
+    assert_in_result(&mut references, "module_for_diagnostics/models/bike_parts_wheel.py", 13, 8);
     // button name="action_set_available" inside the arch
     assert_in_result(&mut references, "module_for_diagnostics/data/buttons.xml", 11, 30);
 
@@ -147,6 +147,33 @@ fn test_references() {
     // }
 }
 
+#[test]
+/// `includeDeclaration` decides whether the definition is part of the references, and the
+/// definition is reported on the name of the symbol, not on the whole statement
+fn test_references_include_declaration() {
+    let (mut odoo, config) = setup_server(true);
+    let mut session = create_init_session(&mut odoo, config);
+    let test_addons_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("data").join("addons");
+    let wheel_py = test_addons_path.join("module_for_diagnostics").join("models").join("bike_parts_wheel.py").sanitize();
+    let base_py = test_addons_path.join("module_1").join("models").join("base_test_models.py").sanitize();
+    // (file, position of a use, line of the definition, name start, name end)
+    let cases = [
+        (&wheel_py, Position::new(13, 8), 13, 8, 28),  // method: `def action_set_available`
+        (&base_py, Position::new(4, 29), 3, 6, 19),     // class: `class BaseTestModel`
+    ];
+    for (path, position, def_line, name_start, name_end) in cases {
+        let without = get_references_with(&mut session, path, position, false);
+        let with = get_references_with(&mut session, path, position, true);
+        let covers_definition = |l: &Location| l.uri.as_str().ends_with(&path[path.rfind("addons/").unwrap()..])
+            && l.range.start.line == def_line && l.range.start.character <= name_start as u32 && l.range.end.character >= name_end as u32;
+        assert!(!without.iter().any(covers_definition), "includeDeclaration=false must not return the definition: {:?}", without);
+        assert_eq!(with.len(), without.len() + 1, "includeDeclaration=true adds exactly the definition");
+        let definition = with.iter().find(|l| !without.contains(l)).expect("definition added");
+        assert_eq!(definition.range.start, Position::new(def_line, name_start as u32), "definition starts at the name");
+        assert_eq!(definition.range.end, Position::new(def_line, name_end as u32), "definition ends at the name");
+    }
+}
+
 fn assert_in_result(references: &mut Vec<Location>, end_path: &str, line: u32, character: u32) {
     let before_len = references.len();
     references.retain(|r| !(r.uri.as_str().ends_with(end_path) && r.range.start.line == line && r.range.start.character == character));
@@ -156,6 +183,10 @@ fn assert_in_result(references: &mut Vec<Location>, end_path: &str, line: u32, c
 }
 
 fn get_references(session: &mut SessionInfo, path: &str, position: Position)-> Vec<Location> {
+    get_references_with(session, path, position, true)
+}
+
+fn get_references_with(session: &mut SessionInfo, path: &str, position: Position, include_declaration: bool)-> Vec<Location> {
     let test_file_uri = FileMgr::pathname2uri(path);
     let references_params = lsp_types::ReferenceParams {
         text_document_position: lsp_types::TextDocumentPositionParams {
@@ -165,7 +196,7 @@ fn get_references(session: &mut SessionInfo, path: &str, position: Position)-> V
             position,
         },
         context: lsp_types::ReferenceContext {
-            include_declaration: true,
+            include_declaration,
         },
         work_done_progress_params: WorkDoneProgressParams::default(),
         partial_result_params: PartialResultParams::default(),
