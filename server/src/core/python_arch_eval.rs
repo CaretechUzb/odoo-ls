@@ -43,6 +43,9 @@ pub struct PythonArchEval {
     sym_stack: Vec<SymbolKey>,
     diagnostics: Vec<Diagnostic>,
     safe_import: Vec<bool>,
+    /// Start of the assignment whose value is visited: names in the value are looked up before
+    /// it, not in the variable it assigns (`records = records.filtered(lambda r: ...)`)
+    assign_start: Option<TextSize>,
 }
 
 impl PythonArchEval {
@@ -57,6 +60,7 @@ impl PythonArchEval {
             sym_stack: vec![symbol.into()],
             diagnostics: Vec::new(),
             safe_import: vec![false],
+            assign_start: None,
         })
     }
 
@@ -328,7 +332,10 @@ impl PythonArchEval {
                 if session.st().ready_for_step(function_key.into(), BuildSteps::ARCH_EVAL){
                     session.st_mut().set_build_status(BuildableSymbolKey::Function(function_key), BuildSteps::ARCH_EVAL, BuildStatus::IN_PROGRESS);
                     self.sym_stack.push(lambda_sym);
+                    // the parameters are declared after the start of an enclosing assignment
+                    let previous_start = self.assign_start.take();
                     self.visit_expr(session, &lambda_expr.body);
+                    self.assign_start = previous_start;
                     let mut deps = vec![vec![], vec![]];
                     let (eval, diags) = Evaluation::eval_from_ast(session, &lambda_expr.body, lambda_sym, &lambda_expr.body.range().start(), false, &mut deps);
                     self.diagnostics.extend(diags);
@@ -463,7 +470,9 @@ impl PythonArchEval {
     fn handle_assigns(&mut self, session: &mut SessionInfo, assigns: Vec<Assign>, range: &TextRange){
         for assign in assigns.iter() {
             if let Some(ref expr) = assign.value {
+                let previous_start = self.assign_start.replace(range.start());
                 self.visit_expr(session, expr);
+                self.assign_start = previous_start;
             }
             match assign.target {
                 AssignTargetType::Name(ref name_expr) => {
@@ -945,7 +954,8 @@ impl PythonArchEval {
             if let Expr::Name(target) = &generator.target
                 && let Some(SymbolKey::Variable(variable)) = session.st().get_positioned_symbol(comprehension, &target.id, &target.range) {
                     // the iterable is validated with the comprehension, its diagnostics are not kept here
-                    if let (Some((_, item)), _) = self.iter_item_evaluation(session, &generator.iter, iter_scope, &target.range.start()) {
+                    let max_infer = self.assign_start.unwrap_or(target.range.start());
+                    if let (Some((_, item)), _) = self.iter_item_evaluation(session, &generator.iter, iter_scope, &max_infer) {
                         session.st_mut()[variable].evaluations = vec![item];
                     }
                 }
@@ -983,7 +993,8 @@ impl PythonArchEval {
         }
         let scope = *self.sym_stack.last().unwrap();
         // the receiver is validated with the call, its diagnostics are not kept here
-        let (Some((class_key, record)), _) = self.iter_item_evaluation(session, &func.value, scope, &call.range.start()) else {
+        let max_infer = self.assign_start.unwrap_or(call.range.start());
+        let (Some((class_key, record)), _) = self.iter_item_evaluation(session, &func.value, scope, &max_infer) else {
             return;
         };
         if session.st()[class_key]._model.is_none() {

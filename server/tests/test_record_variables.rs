@@ -50,6 +50,10 @@ fn test_record_variables() {
     assert_eq!(names_at("self.sorted(key=lambda rec", "is_open", 0), vec!["is_open"], "key of sorted");
     assert_eq!(names_at(".mapped(\"id\")", "is_open", 0), vec!["is_open"], "lambda in a chained call");
     assert_eq!(names_at("(self | other)", "is_open", 0), vec!["is_open"], "records | records");
+    // the receiver of a lambda and the iterable of a comprehension assigned to their own name
+    assert_eq!(names_at("records = records.filtered(lambda rec: rec.is_open())", "is_open", 0), vec!["is_open"]);
+    assert_eq!(names_at("lines = [line for line in records", "is_open", 0), vec!["is_open"]);
+    assert_eq!(names_at("[sub for sub in rec if sub.is_open()]", "is_open", 0), vec!["is_open"], "comprehension on a lambda parameter");
     // the target of a comprehension does not leak into the function
     assert_eq!(names_at("return rec, names", "rec", 0), vec!["int"]);
     // Annotated[T, ...] is T
@@ -74,5 +78,6 @@ fn test_record_variables() {
     callers.sort();
     assert_eq!(callers, vec![
         "in_chain", "in_dict_comp", "in_filtered", "in_generator", "in_list_comp", "in_nested_comp", "in_sorted", "in_union",
+        "reassigned",
     ]);
 }

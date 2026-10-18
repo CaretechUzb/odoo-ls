@@ -42,3 +42,13 @@ class RecordVars(models.Model):
 
 def in_router(env: Annotated[api.Environment, "a dependency"]):
     return env["record.vars"].search([])
+
+
+class RecordVarsAssign(models.Model):
+    _inherit = "record.vars"
+
+    def reassigned(self):
+        records = self.search([])
+        records = records.filtered(lambda rec: rec.is_open())
+        lines = [line for line in records if line.is_open()]
+        return records.mapped(lambda rec: [sub for sub in rec if sub.is_open()]), lines
