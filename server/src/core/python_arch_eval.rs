@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::vec;
 
 use ruff_text_size::{Ranged, TextRange, TextSize};
-use ruff_python_ast::{Alias, AnyRootNodeRef, ExceptHandler, Expr, ExprNamed, FStringPart, Identifier, NodeIndex, Stmt, StmtAnnAssign, StmtAssign, StmtClassDef, StmtExpr, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtTry, StmtWhile, StmtWith};
+use ruff_python_ast::{Alias, AnyRootNodeRef, Comprehension, ExceptHandler, Expr, ExprCall, ExprNamed, FStringPart, Identifier, NodeIndex, Stmt, StmtAnnAssign, StmtAssign, StmtClassDef, StmtExpr, StmtFor, StmtFunctionDef, StmtIf, StmtReturn, StmtTry, StmtWhile, StmtWith};
 use lsp_types::{Diagnostic, Position, Range};
 use tracing::{debug, trace, warn};
 
@@ -32,7 +32,7 @@ use super::import_resolver::ImportResult;
 use super::python_arch_eval_hooks::PythonArchEvalHooks;
 use super::python_odoo_builder::PythonOdooBuilder;
 use super::python_utils::{Assign, AssignTargetType};
-use super::symbols::function_symbol::FunctionSymbol;
+use super::symbols::function_symbol::{ArgumentType, FunctionSymbol};
 
 #[derive(Debug, Clone)]
 pub struct PythonArchEval {
@@ -262,14 +262,13 @@ impl PythonArchEval {
                 );
             },
             Expr::ListComp(expr_list_comp) => {
-                self.visit_expr(session, &expr_list_comp.elt);
+                self.visit_comprehension(session, &expr_list_comp.range, &expr_list_comp.generators, &[&expr_list_comp.elt]);
             },
             Expr::SetComp(expr_set_comp) => {
-                self.visit_expr(session, &expr_set_comp.elt);
+                self.visit_comprehension(session, &expr_set_comp.range, &expr_set_comp.generators, &[&expr_set_comp.elt]);
             },
             Expr::DictComp(expr_dict_comp) => {
-                self.visit_expr(session, &expr_dict_comp.key);
-                self.visit_expr(session, &expr_dict_comp.value);
+                self.visit_comprehension(session, &expr_dict_comp.range, &expr_dict_comp.generators, &[&expr_dict_comp.key, &expr_dict_comp.value]);
             },
             Expr::Await(expr_await) => {
                 self.visit_expr(session, &expr_await.value);
@@ -285,6 +284,7 @@ impl PythonArchEval {
             },
             Expr::Call(expr_call) => {
                 self.visit_expr(session, &expr_call.func);
+                self.type_record_lambdas(session, expr_call);
                 expr_call.arguments.args.iter().for_each(|arg_expr| self.visit_expr(session, arg_expr));
                 expr_call.arguments.keywords.iter().for_each(|keyword| self.visit_expr(session, &keyword.value));
             },
@@ -338,11 +338,8 @@ impl PythonArchEval {
                     session.st_mut().set_build_status(BuildableSymbolKey::Function(function_key), BuildSteps::ARCH_EVAL, BuildStatus::DONE);
                 }
             },
-            Expr::Generator(_todo_expr_generator) => {
-                // generators are lazily evaluated,
-                // thus named expression are only invoked when the generator is iterated
-                // which modifies the variable in it in a custom scope
-                // No method to handle that now, and it is a very niche use that is safe to not handle
+            Expr::Generator(expr_generator) => {
+                self.visit_comprehension(session, &expr_generator.range, &expr_generator.generators, &[&expr_generator.elt]);
             },
             Expr::StringLiteral(_expr_string_literal) => {},
             Expr::BytesLiteral(_expr_bytes_literal) => {},
@@ -350,8 +347,12 @@ impl PythonArchEval {
             Expr::BooleanLiteral(_expr_boolean_literal) => {},
             Expr::NoneLiteral(_expr_none_literal) => {},
             Expr::EllipsisLiteral(_expr_ellipsis_literal) => {},
-            Expr::Attribute(_expr_attribute) => {},
-            Expr::Starred(_expr_starred) => {},
+            Expr::Attribute(expr_attribute) => {
+                self.visit_expr(session, &expr_attribute.value);
+            },
+            Expr::Starred(expr_starred) => {
+                self.visit_expr(session, &expr_starred.value);
+            },
             Expr::IpyEscapeCommand(_expr_ipy_escape_command) => {},
             Expr::Name(_expr_name) => {},
         }
@@ -466,7 +467,9 @@ impl PythonArchEval {
             }
             match assign.target {
                 AssignTargetType::Name(ref name_expr) => {
-                    let variable = session.st().get_positioned_symbol(*self.sym_stack.last().unwrap(), &name_expr.id, &name_expr.range);
+                    // a named expression in a comprehension binds in the enclosing scope
+                    let scope = *self.sym_stack.iter().rev().find(|&&sym| !session.st().is_comprehension(sym)).unwrap();
+                    let variable = session.st().get_positioned_symbol(scope, &name_expr.id, &name_expr.range);
                     if let Some(SymbolKey::Variable(variable_key)) = variable {
                         let parent = session.st()[variable_key].parent();
                         if assign.annotation.is_none() && assign.value.is_none() {
@@ -864,41 +867,16 @@ impl PythonArchEval {
                         //Value is not coming from the unpack, because value on the right is not a tuple or list, or there is too many values to unpack
                         //We can then evaluate the right side by searching for an __iter__ method and assign the return value to the variable.
                         //We restrict that to the case where target is a simple variable, because we don't want to try to unpack the return value of the method (for now)
-                        if variables.len() != 1 {continue;}
+                        if variables.len() != 1 || !for_stmt.target.is_name_expr() {continue;}
                         //if None but the value is a tuple or list, it means that the unpacking failed because too many values to unpack
                         if matches!(for_stmt.iter.as_ref(), Expr::Tuple(_)) ||
                         matches!(for_stmt.iter.as_ref(), Expr::List(_)) ||
                         matches!(for_stmt.iter.as_ref(), Expr::Set(_)) {continue;}
-                        let (eval_iter_node, diags) = Evaluation::eval_from_ast(session,
-                            &for_stmt.iter,
-                            *self.sym_stack.last().unwrap(),
-                            &for_stmt.target.range().start(), false, &mut deps);
-                        session.st_mut().insert_dependencies(self.file, &deps, self.current_step);
+                        let scope = *self.sym_stack.last().unwrap();
+                        let (item, diags) = self.iter_item_evaluation(session, &for_stmt.iter, scope, &for_stmt.target.range().start());
                         self.diagnostics.extend(diags);
-                        if eval_iter_node.len() == 1 { //Only handle values that we are sure about
-                            let eval = &eval_iter_node[0];
-                            let eval_symbol = eval.symbol.get_symbol(session, None, &mut vec![], None);
-                            if !eval_symbol.is_expired_if_weak(session.st()) {
-                                let symbol_eval = SymbolTable::follow_ref(&eval_symbol, session, None, false, false, None, None);
-                                if symbol_eval.len() == 1 && let Some(symbol_type) = symbol_eval[0].upgrade_weak(session.st())
-                                    && matches!(symbol_type, SymbolKey::Class(_)) {
-                                        let (iters, _) = SymbolTable::get_member_symbol(session, symbol_type, "__iter__", None, true, false, false, false, false);
-                                        if let Some(&SymbolKey::Function(iter)) = iters.first() && iters.len() == 1 {
-                                            SyncOdoo::ensure_func_evaluations(session, iter);
-                                            let evals = &session.st()[iter].evaluations;
-                                            if evals.len() == 1 {
-                                                let eval_iter = evals[0].clone();
-                                                if for_stmt.target.is_name_expr() { //only handle simple variable for now
-                                                    let variable = session.st().get_positioned_symbol(*self.sym_stack.last().unwrap(), &for_stmt.target.as_name_expr().unwrap().id, &for_stmt.target.range());
-
-                                                    let symbol = eval_iter.symbol.get_symbol_as_weak(session, Some(&Context::from_iter([(ContextKey::ParentFor, ContextValue::SYMBOL(symbol_type.into()))])), &mut vec![], None);
-                                                    let v = variable.unwrap().unwrap_variable_key();
-                                                    session.st_mut()[v].evaluations = vec![Evaluation::eval_from_symbol(session.st(), symbol.weak, symbol.instance)];
-                                                }
-                                            }
-                                        }
-                                    }
-                            }
+                        if let Some((_, item)) = item {
+                            session.st_mut()[variable].evaluations = vec![item];
                         }
                     }
                 }
@@ -907,6 +885,125 @@ impl PythonArchEval {
         self.visit_sub_stmts(session, &for_stmt.body);
         //TODO split evaluation
         self.visit_sub_stmts(session, &for_stmt.orelse);
+    }
+
+    /// The evaluation of an item of `iter`, from the `__iter__` of its class when it has a single
+    /// one (`BaseModel.__iter__` is hooked to return a record of the model), with that class
+    fn iter_item_evaluation(&mut self, session: &mut SessionInfo, iter: &Expr, scope: SymbolKey, max_infer: &TextSize) -> (Option<(ClassKey, Evaluation)>, Vec<Diagnostic>) {
+        let mut deps = vec![vec![], vec![]];
+        if !self.file_mode {
+            deps.push(vec![]);
+        }
+        let (eval_iter_node, diags) = Evaluation::eval_from_ast(session, iter, scope, max_infer, false, &mut deps);
+        session.st_mut().insert_dependencies(self.file, &deps, self.current_step);
+        if eval_iter_node.len() != 1 { //Only handle values that we are sure about
+            return (None, diags);
+        }
+        let eval_symbol = eval_iter_node[0].symbol.get_symbol(session, None, &mut vec![], None);
+        if eval_symbol.is_expired_if_weak(session.st()) {
+            return (None, diags);
+        }
+        let symbol_eval = SymbolTable::follow_ref(&eval_symbol, session, None, false, false, None, None);
+        let [symbol_eval] = symbol_eval.as_slice() else {
+            return (None, diags);
+        };
+        let Some(SymbolKey::Class(class_key)) = symbol_eval.upgrade_weak(session.st()) else {
+            return (None, diags);
+        };
+        let (iters, _) = SymbolTable::get_member_symbol(session, class_key.into(), "__iter__", None, true, false, false, false, false);
+        let [SymbolKey::Function(iter_func)] = iters.as_slice() else {
+            return (None, diags);
+        };
+        let iter_func = *iter_func;
+        SyncOdoo::ensure_func_evaluations(session, iter_func);
+        let [eval_iter] = session.st()[iter_func].evaluations.as_slice() else {
+            return (None, diags);
+        };
+        let eval_iter = eval_iter.clone();
+        let context = Context::from_iter([(ContextKey::ParentFor, ContextValue::SYMBOL(class_key.into()))]);
+        let symbol = eval_iter.symbol.get_symbol_as_weak(session, Some(&context), &mut vec![], None);
+        (Some((class_key, Evaluation::eval_from_symbol(session.st(), symbol.weak, symbol.instance))), diags)
+    }
+
+    /// See PythonArchBuilder::visit_comprehension. A simple target is evaluated as an item of its
+    /// iterable, as the variable of a for loop.
+    fn visit_comprehension(&mut self, session: &mut SessionInfo, range: &TextRange, generators: &[Comprehension], elts: &[&Expr]) {
+        let scope = *self.sym_stack.last().unwrap();
+        let Some(comprehension) = session.st().get_positioned_symbol(scope, COMPREHENSION_NAME, range) else {
+            return; // can be not found if AST is incomplete
+        };
+        let function_key = comprehension.unwrap_function_key();
+        if !session.st().ready_for_step(function_key.into(), BuildSteps::ARCH_EVAL) {
+            return;
+        }
+        session.st_mut().set_build_status(BuildableSymbolKey::Function(function_key), BuildSteps::ARCH_EVAL, BuildStatus::IN_PROGRESS);
+        for (index, generator) in generators.iter().enumerate() {
+            let iter_scope = if index == 0 { scope } else { comprehension };
+            self.sym_stack.push(iter_scope);
+            self.visit_expr(session, &generator.iter);
+            self.sym_stack.pop();
+            if let Expr::Name(target) = &generator.target
+                && let Some(SymbolKey::Variable(variable)) = session.st().get_positioned_symbol(comprehension, &target.id, &target.range) {
+                    // the iterable is validated with the comprehension, its diagnostics are not kept here
+                    if let (Some((_, item)), _) = self.iter_item_evaluation(session, &generator.iter, iter_scope, &target.range.start()) {
+                        session.st_mut()[variable].evaluations = vec![item];
+                    }
+                }
+            self.sym_stack.push(comprehension);
+            for condition in generator.ifs.iter() {
+                self.visit_expr(session, condition);
+            }
+            self.sym_stack.pop();
+        }
+        self.sym_stack.push(comprehension);
+        for elt in elts {
+            self.visit_expr(session, elt);
+        }
+        self.sym_stack.pop();
+        session.st_mut().set_build_status(BuildableSymbolKey::Function(function_key), BuildSteps::ARCH_EVAL, BuildStatus::DONE);
+    }
+
+    /// `records.filtered(lambda rec: ...)`: the first parameter of a lambda given to a recordset
+    /// method that calls it on each record is a record of the model. Set before the lambda is visited.
+    fn type_record_lambdas(&mut self, session: &mut SessionInfo, call: &ExprCall) {
+        let Expr::Attribute(func) = call.func.as_ref() else {
+            return;
+        };
+        if !matches!(func.attr.id.as_str(), "filtered" | "mapped" | "sorted" | "grouped") {
+            return;
+        }
+        let lambdas: Vec<_> = call.arguments.args.first().into_iter()
+            .chain(call.arguments.keywords.iter()
+                .filter(|keyword| keyword.arg.as_ref().is_some_and(|arg| matches!(arg.id.as_str(), "func" | "key")))
+                .map(|keyword| &keyword.value))
+            .filter_map(|arg| arg.as_lambda_expr())
+            .collect();
+        if lambdas.is_empty() {
+            return;
+        }
+        let scope = *self.sym_stack.last().unwrap();
+        // the receiver is validated with the call, its diagnostics are not kept here
+        let (Some((class_key, record)), _) = self.iter_item_evaluation(session, &func.value, scope, &call.range.start()) else {
+            return;
+        };
+        if session.st()[class_key]._model.is_none() {
+            return;
+        }
+        for lambda in lambdas {
+            let Some(SymbolKey::Function(lambda_key)) = session.st().get_positioned_symbol(scope, LAMBDA_NAME, &lambda.range) else {
+                continue;
+            };
+            let Some(first) = session.st()[lambda_key].args.first() else {
+                continue;
+            };
+            if !matches!(first.arg_type, ArgumentType::ARG | ArgumentType::POS_ONLY) {
+                continue;
+            }
+            let Some(param) = first.symbol.upgrade(session.st()) else {
+                continue;
+            };
+            session.st_mut()[param].evaluations = vec![record.clone()];
+        }
     }
 
     fn _visit_try(&mut self, session: &mut SessionInfo, try_stmt: &StmtTry) {

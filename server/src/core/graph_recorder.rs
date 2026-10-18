@@ -20,7 +20,7 @@ use ruff_python_ast::{Alias, Expr};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 use tracing::{error, info};
 
-use crate::constants::{BuildStatus, BuildSteps, OYarn, PackageType, SymType, LAMBDA_NAME};
+use crate::constants::{is_anonymous_function_name, BuildStatus, BuildSteps, OYarn, PackageType, SymType};
 use crate::core::evaluation::{Evaluation, EvaluationSymbolPtr, EvaluationValue};
 use crate::core::graph_index::{EdgeRow, GraphIndex, NodeInfo, ARCH_EVAL_KINDS, EDGE_CALL, EDGE_INHERITS, EDGE_MODEL_INHERIT, EDGE_MODEL_REF, EDGE_REF, FLAG_SUPER_OF_OVERRIDE, VALIDATION_KINDS};
 use crate::core::symbols::storage::symbol_mgr::SymbolMgr;
@@ -146,8 +146,9 @@ pub fn is_import_alias(st: &SymbolTable, sym: SymbolKey) -> bool {
     matches!(sym, SymbolKey::Variable(v) if st[v].is_import_variable)
 }
 
+/// Lambdas and comprehensions
 fn is_lambda(st: &SymbolTable, sym: SymbolKey) -> bool {
-    matches!(sym, SymbolKey::Function(_)) && st.name(sym).as_str() == LAMBDA_NAME
+    matches!(sym, SymbolKey::Function(_)) && is_anonymous_function_name(st.name(sym).as_str())
 }
 
 pub fn target_class(st: &SymbolTable, sym: SymbolKey) -> TargetClass {

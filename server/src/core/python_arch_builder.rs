@@ -1,6 +1,6 @@
 use lsp_types::Diagnostic;
 use ruff_python_ast::{
-    Alias, AnyRootNodeRef, CmpOp, Expr, ExprNamed, ExprTuple, FStringPart, Identifier, Parameters,
+    Alias, AnyRootNodeRef, CmpOp, Comprehension, Expr, ExprNamed, ExprTuple, FStringPart, Identifier, Parameters,
     Pattern, Stmt, StmtAnnAssign, StmtAssign, StmtClassDef, StmtFor, StmtFunctionDef, StmtIf,
     StmtMatch, StmtTry, StmtWhile, StmtWith,
 };
@@ -11,7 +11,7 @@ use std::vec;
 use tracing::{trace, warn};
 
 use crate::constants::{
-    BuildStatus, BuildSteps, DEBUG_STEPS, DEBUG_STEPS_ONLY_INTERNAL, DiagnosticSource, LAMBDA_NAME, OYarn, SymType
+    BuildStatus, BuildSteps, DEBUG_STEPS, DEBUG_STEPS_ONLY_INTERNAL, DiagnosticSource, COMPREHENSION_NAME, LAMBDA_NAME, OYarn, SymType
 };
 use crate::core::build_scheduler::BuildScheduler;
 use crate::core::evaluation::{Evaluation, EvaluationValue};
@@ -400,14 +400,13 @@ impl PythonArchBuilder {
                 );
             },
             Expr::ListComp(expr_list_comp) => {
-                self.visit_expr(session, &expr_list_comp.elt);
+                self.visit_comprehension(session, expr_list_comp.range, &expr_list_comp.generators, &[&expr_list_comp.elt]);
             },
             Expr::SetComp(expr_set_comp) => {
-                self.visit_expr(session, &expr_set_comp.elt);
+                self.visit_comprehension(session, expr_set_comp.range, &expr_set_comp.generators, &[&expr_set_comp.elt]);
             },
             Expr::DictComp(expr_dict_comp) => {
-                self.visit_expr(session, &expr_dict_comp.key);
-                self.visit_expr(session, &expr_dict_comp.value);
+                self.visit_comprehension(session, expr_dict_comp.range, &expr_dict_comp.generators, &[&expr_dict_comp.key, &expr_dict_comp.value]);
             },
             Expr::Await(expr_await) => {
                 self.visit_expr(session, &expr_await.value);
@@ -471,11 +470,8 @@ impl PythonArchBuilder {
                 self.visit_expr(session, &lambda_expr.body);
                 self.sym_stack.pop();
             },
-            Expr::Generator(_todo_expr_generator) => {
-                // generators are lazily evaluated,
-                // thus named expression are only invoked when the generator is iterated
-                // which modifies the variable in it in a custom scope
-                // No method to handle that now, and it is a very niche use that is safe to not handle
+            Expr::Generator(expr_generator) => {
+                self.visit_comprehension(session, expr_generator.range, &expr_generator.generators, &[&expr_generator.elt]);
             },
             Expr::StringLiteral(_expr_string_literal) => {},
             Expr::BytesLiteral(_expr_bytes_literal) => {},
@@ -483,8 +479,12 @@ impl PythonArchBuilder {
             Expr::BooleanLiteral(_expr_boolean_literal) => {},
             Expr::NoneLiteral(_expr_none_literal) => {},
             Expr::EllipsisLiteral(_expr_ellipsis_literal) => {},
-            Expr::Attribute(_expr_attribute) => {},
-            Expr::Starred(_expr_starred) => {},
+            Expr::Attribute(expr_attribute) => {
+                self.visit_expr(session, &expr_attribute.value);
+            },
+            Expr::Starred(expr_starred) => {
+                self.visit_expr(session, &expr_starred.value);
+            },
             Expr::IpyEscapeCommand(_expr_ipy_escape_command) => {},
             Expr::Name(_expr_name) => {},
         }
@@ -655,8 +655,39 @@ impl PythonArchBuilder {
     fn visit_named_expr(&mut self, session: &mut SessionInfo, named_expr: &ExprNamed) {
         self.visit_expr(session, &named_expr.value);
         if let Some(name_expr) = named_expr.target.as_name_expr() { // Only handle valid named expressions
-            session.sync_odoo.symbol_table.add_new_variable(*self.sym_stack.last().unwrap(), &name_expr.id, named_expr.target.range());
+            // a named expression in a comprehension binds in the enclosing scope
+            let scope = *self.sym_stack.iter().rev().find(|&&sym| !session.st().is_comprehension(sym)).unwrap();
+            session.sync_odoo.symbol_table.add_new_variable(scope, &name_expr.id, named_expr.target.range());
         }
+    }
+
+    /// A comprehension gets its own scope, as in Python 3, with its targets in it. Its first
+    /// iterable is evaluated in the enclosing scope, everything else in its own.
+    fn visit_comprehension(&mut self, session: &mut SessionInfo, range: TextRange, generators: &[Comprehension], elts: &[&Expr]) {
+        let comprehension_key = session.st_mut().add_new_function(
+            *self.sym_stack.last().unwrap(), COMPREHENSION_NAME, range, range.start()
+        );
+        //arch is considered done on the fly
+        session.st_mut().set_build_status(comprehension_key.into(), BuildSteps::ARCH, BuildStatus::DONE);
+        if let Some(first) = generators.first() {
+            self.visit_expr(session, &first.iter);
+        }
+        self.sym_stack.push(comprehension_key.into());
+        for (index, generator) in generators.iter().enumerate() {
+            if index > 0 {
+                self.visit_expr(session, &generator.iter);
+            }
+            for name_expr in python_utils::target_names(&generator.target) {
+                session.st_mut().add_new_variable(comprehension_key, &name_expr.id, name_expr.range);
+            }
+            for condition in generator.ifs.iter() {
+                self.visit_expr(session, condition);
+            }
+        }
+        for elt in elts {
+            self.visit_expr(session, elt);
+        }
+        self.sym_stack.pop();
     }
 
     fn handle_func_args(function_key: FunctionKey, session: &mut SessionInfo, parameters: &Parameters) {
@@ -1004,6 +1035,7 @@ impl PythonArchBuilder {
     fn visit_for(&mut self, session: &mut SessionInfo, for_stmt: &StmtFor) {
         // TODO: Handle breaks for sections
         let scope = *self.sym_stack.last().unwrap();
+        self.visit_expr(session, &for_stmt.iter);
         let unpacked = python_utils::unpack_assign(&[*for_stmt.target.clone()], None, None);
         for assign in unpacked {
             if let Some(ref expr) = assign.value {

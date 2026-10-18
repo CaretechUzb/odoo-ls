@@ -12,8 +12,8 @@
     {
       "label": "<lambda>",
       "kind": "Function",
-      "detail": "((r) -> None)",
-      "label_detail": "None",
+      "detail": "((r) -> int)",
+      "label_detail": "int",
       "sort_text": "<lambda>"
     },
     {

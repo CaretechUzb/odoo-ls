@@ -17,7 +17,7 @@ use itertools::FoldWhile::{Continue, Done};
 use itertools::Itertools;
 use lsp_types::{Diagnostic, Location, Position, Range};
 use ruff_python_ast::{
-    Expr, ExprCall, FStringPart, Identifier, Number, Parameter, UnaryOp,
+    Comprehension, Expr, ExprCall, FStringPart, Identifier, Number, Operator, Parameter, UnaryOp,
 };
 use ruff_text_size::{Ranged, TextRange, TextSize};
 use std::cmp::{max, min};
@@ -616,6 +616,54 @@ impl Evaluation {
             value: None,
             range: None
         }
+    }
+
+    /// Evaluate the iterables, conditions and elements of a comprehension, in its scope (see
+    /// PythonArchBuilder::visit_comprehension) and validated with it, as a lambda
+    #[allow(clippy::too_many_arguments)]
+    fn eval_comprehension(session: &mut SessionInfo, range: &TextRange, generators: &[Comprehension], elts: &[&Expr], parent: SymbolKey, max_infer: &TextSize, is_in_validation: bool, diagnostics: &mut Vec<Diagnostic>, required_dependencies: &mut Vec<Vec<SourceFileKey>>) {
+        let Some(comprehension) = session.st().get_positioned_symbol(parent, COMPREHENSION_NAME, range) else {
+            // can be not found if AST is incomplete
+            for elt in elts {
+                let (_, diags) = Evaluation::eval_from_ast(session, elt, parent, max_infer, false, required_dependencies);
+                if is_in_validation {
+                    diagnostics.extend(diags);
+                }
+            }
+            return;
+        };
+        let comprehension_key = comprehension.unwrap_buildable_key();
+        let mut is_validating_steps = false;
+        // not ready_for_step: a comprehension that arch eval did not reach is validated all the same
+        if is_in_validation && session.st().build_status(comprehension_key, BuildSteps::VALIDATION) == BuildStatus::PENDING {
+            is_validating_steps = true;
+            session.st_mut().set_build_status(comprehension_key, BuildSteps::VALIDATION, BuildStatus::IN_PROGRESS);
+        }
+        let mut evaluate = |session: &mut SessionInfo, expr: &Expr, scope: SymbolKey| {
+            let (_, diags) = Evaluation::eval_from_ast(session, expr, scope, max_infer, false, required_dependencies);
+            if is_validating_steps {
+                diagnostics.extend(diags);
+            }
+        };
+        for (index, generator) in generators.iter().enumerate() {
+            evaluate(session, &generator.iter, if index == 0 { parent } else { comprehension });
+            for condition in generator.ifs.iter() {
+                evaluate(session, condition, comprehension);
+            }
+        }
+        for elt in elts {
+            evaluate(session, elt, comprehension);
+        }
+        if is_validating_steps {
+            session.st_mut().set_build_status(comprehension_key, BuildSteps::VALIDATION, BuildStatus::DONE);
+        }
+    }
+
+    /// True if `base` is `typing.Annotated` or `typing_extensions.Annotated`
+    fn is_annotated_form(session: &mut SessionInfo, base: &EvaluationSymbolPtr) -> bool {
+        [&["typing"][..], &["typing_extensions"][..]].iter().any(|module|
+            !SymbolTable::follow_ref(base, session, None, false, false, Some((module, &["Annotated"])), None).is_empty()
+        )
     }
 
     /** Build evaluations from an ast node that can be associated to a LocalizedSymbol
@@ -1262,6 +1310,16 @@ impl Evaluation {
                 if base.is_expired_if_weak(session.st()) {
                     return AnalyzeAstResult::from_only_diagnostics(diagnostics);
                 }
+                // Annotated[T, ...] annotates the type T
+                if for_annotation && Evaluation::is_annotated_form(session, base) {
+                    let inner = match sub.slice.as_ref() {
+                        Expr::Tuple(tuple) if !tuple.elts.is_empty() => &tuple.elts[0],
+                        slice => slice,
+                    };
+                    let (inner_evals, diags) = Evaluation::eval_from_ast(session, inner, parent, max_infer, true, required_dependencies);
+                    diagnostics.extend(diags);
+                    return AnalyzeAstResult { evaluations: inner_evals, diagnostics };
+                }
                 let bases = SymbolTable::follow_ref(base, session, None, false, false, None, None);
                 let value = Evaluation::expr_to_str(session, &sub.slice, parent, max_infer, false, &mut diagnostics);
                 diagnostics.extend(value.1);
@@ -1349,11 +1407,28 @@ impl Evaluation {
                 }
             },
             ExprOrIdent::Expr(Expr::BinOp(operator)) => {
-                if is_in_validation || odoo.evaluation_search.is_some() {
-                    let (_, diags) = Evaluation::eval_from_ast(session, &operator.left, parent, max_infer, false, required_dependencies);
-                    diagnostics.extend(diags);
-                    let (_, diags) = Evaluation::eval_from_ast(session, &operator.right, parent, max_infer, false, required_dependencies);
-                    diagnostics.extend(diags);
+                // records | records, &, - and + give records of the same model
+                let is_record_set_op = matches!(operator.op, Operator::BitOr | Operator::BitAnd | Operator::Sub | Operator::Add);
+                let evaluate_operands = is_in_validation || odoo.evaluation_search.is_some();
+                if evaluate_operands || is_record_set_op {
+                    let (left_evals, diags) = Evaluation::eval_from_ast(session, &operator.left, parent, max_infer, false, required_dependencies);
+                    if evaluate_operands {
+                        diagnostics.extend(diags);
+                        let (_, diags) = Evaluation::eval_from_ast(session, &operator.right, parent, max_infer, false, required_dependencies);
+                        diagnostics.extend(diags);
+                    }
+                    if is_record_set_op && let [left_eval] = left_evals.as_slice() {
+                        let left_symbol = left_eval.symbol.get_symbol(session, Some(context), &mut vec![], Some(parent));
+                        let left_types = SymbolTable::follow_ref(&left_symbol, session, None, false, false, None, None);
+                        if let [EvaluationSymbolPtr::WEAK(record_set) | EvaluationSymbolPtr::SELF(record_set)] = left_types.as_slice()
+                            && record_set.instance == Some(true)
+                            && let Some(SymbolKey::Class(class_key)) = record_set.weak.upgrade(session.st())
+                            && session.st()[class_key]._model.is_some() {
+                                let mut evaluation = Evaluation::eval_from_ptr(&left_types[0]);
+                                evaluation.range = Some(operator.range);
+                                evals.push(evaluation);
+                            }
+                    }
                 }
             },
             ExprOrIdent::Expr(Expr::If(if_expr)) => {
@@ -1550,44 +1625,27 @@ impl Evaluation {
                     }
                 }
             },
-            // Todo: process comprehensions
             ExprOrIdent::Expr(Expr::ListComp(list_comp_expr)) => {
                 evals.push(Evaluation::new_list(odoo, None, list_comp_expr.range));
                 if is_in_validation || odoo.evaluation_search.is_some() {
-                    let (_, diags) = Evaluation::eval_from_ast(session, &list_comp_expr.elt, parent, max_infer, false, required_dependencies);
-                    if is_in_validation {
-                        diagnostics.extend(diags);
-                    }
+                    Evaluation::eval_comprehension(session, &list_comp_expr.range, &list_comp_expr.generators, &[&list_comp_expr.elt], parent, max_infer, is_in_validation, &mut diagnostics, required_dependencies);
                 }
             },
             ExprOrIdent::Expr(Expr::SetComp(set_comp_expr)) => {
                 evals.push(Evaluation::new_set(odoo, set_comp_expr.range));
                 if is_in_validation || odoo.evaluation_search.is_some() {
-                    let (_, diags) = Evaluation::eval_from_ast(session, &set_comp_expr.elt, parent, max_infer, false, required_dependencies);
-                    if is_in_validation {
-                        diagnostics.extend(diags);
-                    }
+                    Evaluation::eval_comprehension(session, &set_comp_expr.range, &set_comp_expr.generators, &[&set_comp_expr.elt], parent, max_infer, is_in_validation, &mut diagnostics, required_dependencies);
                 }
             },
             ExprOrIdent::Expr(Expr::Generator(generator_expr)) => {
                 if is_in_validation || odoo.evaluation_search.is_some() {
-                    let (_, diags) = Evaluation::eval_from_ast(session, &generator_expr.elt, parent, max_infer, false, required_dependencies);
-                    if is_in_validation {
-                        diagnostics.extend(diags);
-                    }
+                    Evaluation::eval_comprehension(session, &generator_expr.range, &generator_expr.generators, &[&generator_expr.elt], parent, max_infer, is_in_validation, &mut diagnostics, required_dependencies);
                 }
             },
             ExprOrIdent::Expr(Expr::DictComp(dict_comp_expr)) => {
                 evals.push(Evaluation::new_dict(odoo, None, dict_comp_expr.range));
                 if is_in_validation || odoo.evaluation_search.is_some() {
-                    let (_, diags) = Evaluation::eval_from_ast(session, &dict_comp_expr.key, parent, max_infer, false, required_dependencies);
-                    if is_in_validation {
-                        diagnostics.extend(diags);
-                    }
-                    let (_, diags) = Evaluation::eval_from_ast(session, &dict_comp_expr.value, parent, max_infer, false, required_dependencies);
-                    if is_in_validation {
-                        diagnostics.extend(diags);
-                    }
+                    Evaluation::eval_comprehension(session, &dict_comp_expr.range, &dict_comp_expr.generators, &[&dict_comp_expr.key, &dict_comp_expr.value], parent, max_infer, is_in_validation, &mut diagnostics, required_dependencies);
                 }
             },
             // Nothing to do here
