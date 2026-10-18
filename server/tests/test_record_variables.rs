@@ -4,11 +4,12 @@ mod test_utils;
 use std::path::Path;
 
 use lsp_types::{
-    CallHierarchyIncomingCallsParams, CallHierarchyPrepareParams, PartialResultParams, Position,
+    CallHierarchyIncomingCallsParams, CompletionResponse, CallHierarchyPrepareParams, PartialResultParams, Position,
     TextDocumentIdentifier, TextDocumentPositionParams, WorkDoneProgressParams,
 };
 use odoo_ls_server::core::file_mgr::FileMgr;
 use odoo_ls_server::core::odoo::{Odoo, SyncOdoo};
+use odoo_ls_server::features::completion::CompletionFeature;
 use odoo_ls_server::utils::PathSanitizer;
 use test_utils::get_resolved_symbols_at_position;
 
@@ -59,6 +60,20 @@ fn test_record_variables() {
     // Annotated[T, ...] is T
     assert_eq!(names_at("return env[", "env", 0), vec!["Environment"]);
     assert_eq!(names_at("return env[", "search", 0), vec!["search"]);
+
+    // completion: a comprehension variable in its element, and no anonymous scope in the list
+    let mut labels_at = |line_marker: &str, needle: &str, offset: u32| -> Vec<String> {
+        let (line, column) = at(line_marker, needle, 0);
+        match CompletionFeature::autocomplete(&mut session, file_symbol, &file_info, None, line, column - 1 + offset) {
+            Some(CompletionResponse::Array(items)) => items.into_iter().map(|i| i.label).collect(),
+            Some(CompletionResponse::List(list)) => list.items.into_iter().map(|i| i.label).collect(),
+            None => vec![],
+        }
+    };
+    assert!(labels_at("values = [rec.id for rec", "rec.id", 2).contains(&"rec".to_string()));
+    let labels = labels_at("return self.browse({", "{", 1);
+    assert!(labels.contains(&"values".to_string()), "{labels:?}");
+    assert!(!labels.iter().any(|l| l.starts_with('<')), "anonymous scopes completed: {labels:?}");
 
     // and the calls through these records are incoming calls of the method
     let (line, column) = at("def is_open", "is_open", 0);

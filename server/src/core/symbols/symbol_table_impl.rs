@@ -903,6 +903,10 @@ impl SymbolTable {
         let current_index = SectionIndex::INDEX(current_section.index);
 
         for entry in target_sym_mgr.symbols().names_with_prefix(name_prefix) {
+            // lambdas and comprehensions have no name to complete
+            if is_anonymous_function_name(entry.name()) {
+                continue;
+            }
             let mut seen = HashSet::default();
             let content = self.get_loc_symbol(target_sym_mgr, entry, position, &current_index, &mut seen);
 
@@ -1869,7 +1873,9 @@ impl SymbolTable {
         ) {
             // Add symbols from files and functions
             if matches!(on_symbol.typ(), SymType::FILE | SymType::FUNCTION) {
-                let symbols_map = symbol_table.get_all_visible_symbols(on_symbol, name, position);
+                // the targets of a comprehension come after its element (see infer_name)
+                let own_position = if symbol_table.is_comprehension(on_symbol) { u32::MAX } else { position };
+                let symbols_map = symbol_table.get_all_visible_symbols(on_symbol, name, own_position);
                 for (sym_name, sym_vec) in symbols_map {
                     acc.entry(sym_name)
                         .or_default()

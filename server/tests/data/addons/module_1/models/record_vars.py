@@ -52,3 +52,7 @@ class RecordVarsAssign(models.Model):
         records = records.filtered(lambda rec: rec.is_open())
         lines = [line for line in records if line.is_open()]
         return records.mapped(lambda rec: [sub for sub in rec if sub.is_open()]), lines
+
+    def completion_probe(self):
+        values = [rec.id for rec in self if rec]
+        return self.browse({"id": values})
