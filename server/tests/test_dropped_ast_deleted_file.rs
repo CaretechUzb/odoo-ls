@@ -52,7 +52,7 @@ fn test_features_on_deleted_file_with_dropped_ast() {
     assert!(test_utils::get_definition_locs(&mut session, file_symbol, &file_info, 3, 8).is_empty());
     assert!(CompletionFeature::autocomplete(&mut session, file_symbol, &file_info, None, 16, 20).is_none());
     assert!(SemanticTokensFeature::tokens_python(&mut session, file_symbol, &file_info).data.is_empty());
-    assert!(ReferenceFeature::get_references(&mut session, file_symbol, &file_info, 8, 6).unwrap_or_default().is_empty());
+    assert!(ReferenceFeature::get_references(&mut session, file_symbol, &file_info, 8, 6, true).unwrap_or_default().is_empty());
     // Ranges in the file still convert, from the line table.
     let range = session.sync_odoo.get_file_mgr().borrow().text_range_to_range(&mut session, &sanitized, ruff_text_size::TextRange::new(0.into(), 4.into()));
     assert_eq!(range, lsp_types::Range::new(lsp_types::Position::new(0, 0), lsp_types::Position::new(0, 4)));

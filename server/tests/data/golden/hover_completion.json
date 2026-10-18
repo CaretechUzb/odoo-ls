@@ -10,13 +10,6 @@
   ],
   "completion module_1/models/arch_eval_hooks_model.py:21:30 (create dict key)": [
     {
-      "label": "<lambda>",
-      "kind": "Function",
-      "detail": "((r) -> None)",
-      "label_detail": "None",
-      "sort_text": "<lambda>"
-    },
-    {
       "label": "ArchEvalHooksModel",
       "kind": "Class",
       "detail": "",

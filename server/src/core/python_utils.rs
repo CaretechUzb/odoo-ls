@@ -120,6 +120,17 @@ pub fn unpack_iter_assign(targets: &[Expr], annotation: Option<&Expr>, value: Op
     res
 }
 
+/// The names bound by an assignment target: `a`, `a, (b, *c)`, `[a, b]`
+pub fn target_names(target: &Expr) -> Vec<&ExprName> {
+    match target {
+        Expr::Name(name) => vec![name],
+        Expr::Tuple(tuple) => tuple.elts.iter().flat_map(target_names).collect(),
+        Expr::List(list) => list.elts.iter().flat_map(target_names).collect(),
+        Expr::Starred(starred) => target_names(&starred.value),
+        _ => vec![],
+    }
+}
+
 pub fn unpack_assign(targets: &[Expr], annotation: Option<&Expr>, value: Option<&Expr>) -> Vec<Assign> {
     //Given the target, the annotation and the values, return a list of tuples (variable: ExprName, annotation, value)
     //for each variable, associating annotation and value for the right variable

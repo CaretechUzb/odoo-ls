@@ -1785,7 +1785,7 @@ impl Odoo {
                 if !file_info.borrow().file_info_ast.borrow().is_built() {
                     file_info.borrow_mut().prepare_ast(session);
                 }
-                return Ok(ReferenceFeature::get_references(session, file_symbol, &file_info, params.text_document_position.position.line, params.text_document_position.position.character));
+                return Ok(ReferenceFeature::get_references(session, file_symbol, &file_info, params.text_document_position.position.line, params.text_document_position.position.character, params.context.include_declaration));
             }
         }
         Ok(None)

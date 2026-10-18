@@ -62,7 +62,7 @@ impl ReferenceFeature {
     * Get all References to a symbol at the provided line and char
      */
     /// TODO: Odoo specific (XML field refs, string-based model refs)
-    pub fn get_references(session: &mut SessionInfo, file_symbol: SourceFileKey, file_info: &Rc<RefCell<FileInfo>>, line: u32, character: u32) -> Option<Vec<Location>> {
+    pub fn get_references(session: &mut SessionInfo, file_symbol: SourceFileKey, file_info: &Rc<RefCell<FileInfo>>, line: u32, character: u32, include_declaration: bool) -> Option<Vec<Location>> {
         if matches!(file_info.borrow().file_info_ast.borrow().ast, Ast::JsAst(_)) {
             return ReferenceFeature::get_reference_js(session, file_info, line, character);
         }
@@ -185,20 +185,25 @@ impl ReferenceFeature {
                             SourceFileKey::JsFile(_) => { unreachable!("tsserverbridge should have handled js references")}
                         }
                     }
-                    //add definition
+                    //add definition, on the range of its name and not of the whole statement
                     let sym_typ = definition_source.typ();
-                    if matches!(sym_typ, SymType::CLASS | SymType::FUNCTION | SymType::VARIABLE) {
-                        let file = session.st().get_file(definition_source).unwrap();
-                        let path = session.st().path(file);
-                        let file_info = session.sync_odoo.get_file_mgr().borrow().get_file_info(path);
-                        if let Some(file_info) = file_info {
-                            let transformed_range = file_info.borrow().text_range_to_range(session.st().range(definition_source), session.sync_odoo.encoding);
-                            let uri = FileMgr::pathname2uri(path);
-                            locations.push(Location {
-                                uri,
-                                range: transformed_range,
-                            });
-                        }
+                    if include_declaration && matches!(sym_typ, SymType::CLASS | SymType::FUNCTION | SymType::VARIABLE)
+                        && let Some(file) = session.st().get_file(definition_source)
+                    {
+                        let path = session.st().file_path(file).to_string();
+                        // Symbols without a graph identity (e.g. parameters) keep their own range, which is their name
+                        let (start, end) = match call_hierarchy::node_of_symbol(session, definition_source) {
+                            Some(node) => node.selection,
+                            None => {
+                                let range = session.st().range(definition_source);
+                                (range.start().to_u32(), range.end().to_u32())
+                            }
+                        };
+                        let range = call_hierarchy::RangeConverter::default().range(session, &path, start, end);
+                        locations.push(Location {
+                            uri: FileMgr::pathname2uri(&path),
+                            range,
+                        });
                     }
                 },
                 SymType::XML_ASSET | SymType::XML_DELETE | SymType::XML_RECORD | SymType::XML_MENUITEM | SymType::XML_TEMPLATE => {

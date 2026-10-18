@@ -199,6 +199,13 @@ pub fn install_debug_ptr(table: &SymbolTable) {
 }
 
 pub const LAMBDA_NAME: &str = "<lambda>";
+/// Scope of a list, set or dict comprehension or of a generator expression, holding its targets
+pub const COMPREHENSION_NAME: &str = "<comprehension>";
+
+/// Lambdas and comprehensions are function symbols that are neither members nor callers
+pub fn is_anonymous_function_name(name: &str) -> bool {
+    name == LAMBDA_NAME || name == COMPREHENSION_NAME
+}
 
 /// tsserver diags to drop: the oxc rule named next to each already catches it
 pub const TSSERVER_DIAGS_COVERED_BY_OXC: &[&str] = &[

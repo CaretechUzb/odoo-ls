@@ -7,7 +7,7 @@ use ruff_text_size::TextRange;
 use crate::core::symbols::DocString;
 
 use crate::{
-    constants::{BuildStatus, BuildSteps, MissingDataSource, OYarn, PackageType, SymType, LAMBDA_NAME},
+    constants::{is_anonymous_function_name, BuildStatus, BuildSteps, MissingDataSource, OYarn, PackageType, SymType, COMPREHENSION_NAME},
     core::{
         build_scheduler::BuildScheduler,
         diagnostics::{create_diagnostic, DiagnosticCode},
@@ -903,6 +903,10 @@ impl SymbolTable {
         let current_index = SectionIndex::INDEX(current_section.index);
 
         for entry in target_sym_mgr.symbols().names_with_prefix(name_prefix) {
+            // lambdas and comprehensions have no name to complete
+            if is_anonymous_function_name(entry.name()) {
+                continue;
+            }
             let mut seen = HashSet::default();
             let content = self.get_loc_symbol(target_sym_mgr, entry, position, &current_index, &mut seen);
 
@@ -1275,6 +1279,11 @@ impl SymbolTable {
     }
 
     /// get a Symbol that has the same given range and name
+    /// The scope of a comprehension or generator expression (see COMPREHENSION_NAME)
+    pub fn is_comprehension(&self, symbol: SymbolKey) -> bool {
+        matches!(symbol, SymbolKey::Function(_)) && self.name(symbol).as_str() == COMPREHENSION_NAME
+    }
+
     pub fn get_positioned_symbol(&self, target: SymbolKey, name: &str, range: &TextRange) -> Option<SymbolKey> {
         if let Some(symbols) = match target {
             SymbolKey::Class(c) => { self[c].symbols().get(name) },
@@ -1729,8 +1738,8 @@ impl SymbolTable {
         }
         acc.insert(symbol_key);
         let mut append_result = |name: OYarn, symbol: SymbolKey| {
-            // lambda functions are not real call members
-            if name == LAMBDA_NAME { return; }
+            // lambda functions and comprehensions are not real call members
+            if is_anonymous_function_name(&name) { return; }
             if let Some(vec) = result.get_mut(&name) {
                 vec.push(symbol);
             } else {
@@ -1864,7 +1873,9 @@ impl SymbolTable {
         ) {
             // Add symbols from files and functions
             if matches!(on_symbol.typ(), SymType::FILE | SymType::FUNCTION) {
-                let symbols_map = symbol_table.get_all_visible_symbols(on_symbol, name, position);
+                // the targets of a comprehension come after its element (see infer_name)
+                let own_position = if symbol_table.is_comprehension(on_symbol) { u32::MAX } else { position };
+                let symbols_map = symbol_table.get_all_visible_symbols(on_symbol, name, own_position);
                 for (sym_name, sym_vec) in symbols_map {
                     acc.entry(sym_name)
                         .or_default()
@@ -1885,11 +1896,21 @@ impl SymbolTable {
     //infer a name, given a position
     pub fn infer_name(odoo: &SyncOdoo, on_symbol: SymbolKey, name: &str, position: Option<u32>) -> ContentSymbols {
         let symbol_table = &odoo.symbol_table;
-        let results = symbol_table.get_content_symbol(on_symbol, name, position.unwrap_or(u32::MAX));
+        // The targets of a comprehension come after its element: `rec.name for rec in records`.
+        // The comprehension runs where it is written, so the enclosing scope keeps the position.
+        let is_comprehension = symbol_table.is_comprehension(on_symbol);
+        let own_position = if is_comprehension { u32::MAX } else { position.unwrap_or(u32::MAX) };
+        let results = symbol_table.get_content_symbol(on_symbol, name, own_position);
         if !results.symbols.is_empty() {
             return results;
         }
         let on_symbol_type = on_symbol.typ();
+        if is_comprehension {
+            let parent = symbol_table.parent(on_symbol).unwrap();
+            if !matches!(parent, SymbolKey::Class(_)) {
+                return Self::infer_name(odoo, parent, name, position);
+            }
+        }
         if !matches!(on_symbol_type, SymType::FILE | SymType::PACKAGE(_) | SymType::ROOT) {
             let mut parent = symbol_table.parent(on_symbol).unwrap();
             while let SymbolKey::Class(c) = parent {
